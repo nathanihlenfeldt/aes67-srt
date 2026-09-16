@@ -1,6 +1,7 @@
 #include "audio/backend.hpp"
 #include "audio/null_backend.hpp"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -11,7 +12,9 @@
 namespace {
 
 using aes67_srt::audio::AudioFormat;
+using aes67_srt::audio::create_audio_backend;
 using aes67_srt::audio::NullBackend;
+using aes67_srt::audio::ravenna_backend_available;
 using aes67_srt::wire::PayloadType;
 
 /** Audio that is not silence, so "it arrived" is distinguishable from "it was
@@ -118,6 +121,94 @@ TEST_CASE(audio_a_write_the_device_cannot_take_is_counted) {
   // It kept a period's worth rather than losing everything.
   CHECK_EQ(backend.pending_bytes(), format.period_bytes());
 }
+
+TEST_CASE(audio_the_factory_refuses_a_backend_this_build_does_not_have) {
+  // A typo in the configuration, and the reason names the string that was typed
+  // rather than reporting a null pointer somewhere further along.
+  aes67_srt::AudioConfig config;
+  config.backend = "coreaudio";
+  std::unique_ptr<aes67_srt::audio::AudioBackend> backend =
+      create_audio_backend(config);
+  CHECK_EQ(backend->kind(), std::string("unavailable"));
+  std::string error;
+  CHECK(!backend->open(AudioFormat{}, &error));
+  CHECK(contains(error, "coreaudio"));
+  CHECK(contains(error, "audio.backend"));
+
+  // And the one backend every build has, so the fake mode always has somewhere
+  // to put its audio.
+  CHECK(aes67_srt::audio::null_backend_available());
+  aes67_srt::AudioConfig as_null;
+  as_null.backend = "null";
+  CHECK_EQ(create_audio_backend(as_null)->kind(), std::string("null"));
+}
+
+#if AES67_SRT_WITH_ALSA
+TEST_CASE(audio_with_alsa_the_factory_hands_back_the_ravenna_backend) {
+  CHECK(ravenna_backend_available());
+
+  aes67_srt::AudioConfig config;  // the specification: plughw:RAVENNA, 64 channels
+  std::unique_ptr<aes67_srt::audio::AudioBackend> backend =
+      create_audio_backend(config);
+  CHECK_EQ(backend->kind(), std::string("ravenna"));
+
+  // No CI runner has the RAVENNA kernel module, so opening the device must fail
+  // — and fail naming the device, because that message is what a commissioning
+  // engineer reads on a machine that is missing the module rather than broken.
+  std::string error;
+  const AudioFormat format;
+  CHECK(!backend->open(format, &error));
+  CHECK(contains(error, config.device));
+  CHECK(!backend->is_open());
+  CHECK_EQ(backend->overruns(), 0u);
+
+  // A device that could not be opened refuses politely rather than crashing:
+  // this is the state the audio thread sits in while somebody fixes it.
+  std::vector<uint8_t> period(format.period_bytes(), 0);
+  CHECK(!backend->read(period.data(), format.period_frames, &error));
+  CHECK(!error.empty());
+  CHECK(!backend->write(period.data(), format.period_frames, &error));
+  CHECK(!error.empty());
+
+  backend->close();
+  CHECK(!backend->is_open());
+  // Closing twice is not an error: the destructor does it again on every exit
+  // path, including after a failed open.
+  backend->close();
+}
+#else
+TEST_CASE(audio_without_alsa_the_ravenna_backend_refuses_and_says_why) {
+  // macOS, and any Linux build configured with -DWITH_ALSA=OFF. The module still
+  // compiles and still answers: a reason rather than a null pointer, and the
+  // reason names both the problem and the way out.
+  CHECK(!ravenna_backend_available());
+
+  aes67_srt::AudioConfig config;  // asks for ravenna, as production does
+  std::unique_ptr<aes67_srt::audio::AudioBackend> backend =
+      create_audio_backend(config);
+  std::string error;
+  CHECK(!backend->open(AudioFormat{}, &error));
+  CHECK(contains(error, "ALSA"));
+  CHECK(contains(error, "null"));
+  CHECK(!backend->is_open());
+
+  std::vector<uint8_t> period(AudioFormat{}.period_bytes(), 0);
+  CHECK(!backend->read(period.data(), AudioFormat{}.period_frames, &error));
+  CHECK(!backend->write(period.data(), AudioFormat{}.period_frames, &error));
+}
+
+TEST_CASE(audio_the_ravenna_backend_is_absent_rather_than_faked) {
+  // The trap this guards: a backend that pretends to open so that "the audio
+  // path" looks alive on a developer machine is worse than no backend at all,
+  // because the illusion survives all the way to a site.
+  CHECK(!ravenna_backend_available());
+  aes67_srt::AudioConfig config;
+  std::unique_ptr<aes67_srt::audio::AudioBackend> backend =
+      create_audio_backend(config);
+  CHECK_EQ(backend->kind(), std::string("unavailable"));
+  CHECK(backend->detail().find("no ALSA") != std::string::npos);
+}
+#endif
 
 TEST_CASE(audio_carries_audio_end_to_end_without_hardware) {
   // Ticket 09's first criterion, with no ALSA device, no daemon and no socket:

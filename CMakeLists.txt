@@ -128,7 +128,7 @@ if(NOT WITH_ALSA STREQUAL "OFF")
   elseif(WITH_ALSA STREQUAL "ON")
     message(FATAL_ERROR "WITH_ALSA=ON but libasound was not found")
   else()
-    message(STATUS "ALSA not found - reserved, no module uses it yet")
+    message(STATUS "ALSA not found - the RAVENNA backend will refuse to open")
   endif()
 endif()
 
@@ -151,8 +151,20 @@ set(AES67_SRT_SOURCES
   src/version.cpp
   src/wire/frame.cpp)
 
+# The RAVENNA backend is ALSA code and only compiles where ALSA is present, so
+# the file is added to the library rather than wrapped in #if inside itself: a
+# translation unit that cannot include its own header is not one worth pretending
+# to build. What degrades when ALSA is absent is the factory's `ravenna` arm
+# (src/audio/backend.cpp), which answers with a reason instead.
+if(ALSA_AVAILABLE)
+  list(APPEND AES67_SRT_SOURCES src/audio/ravenna_backend.cpp)
+endif()
+
 add_library(aes67-srt-core STATIC ${AES67_SRT_SOURCES})
 target_include_directories(aes67-srt-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(ALSA_AVAILABLE)
+  target_include_directories(aes67-srt-core PRIVATE "${ALSA_INCLUDE_DIR}")
+endif()
 target_compile_options(aes67-srt-core PRIVATE -Wall -Wextra -Wno-unused-parameter)
 target_compile_definitions(aes67-srt-core PUBLIC
   AES67_SRT_VERSION="${PROJECT_VERSION}"
@@ -170,6 +182,15 @@ if(SRT_AVAILABLE)
   message(STATUS "transport: libsrt linked from ${SRT_LIBRARY}")
 else()
   message(STATUS "transport: built without libsrt - Link::open will refuse")
+endif()
+
+# ALSA is the same story: linked when found, and the audio module compiles and
+# reports honestly when it is not.
+if(ALSA_AVAILABLE)
+  target_link_libraries(aes67-srt-core PRIVATE "${ALSA_LIBRARY}")
+  message(STATUS "audio: RAVENNA backend linked from ${ALSA_LIBRARY}")
+else()
+  message(STATUS "audio: built without ALSA - the RAVENNA backend will refuse to open")
 endif()
 
 add_executable(aes67-srt src/main.cpp)
@@ -238,7 +259,7 @@ message(STATUS "")
 message(STATUS "aes67-srt ${PROJECT_VERSION} configuration")
 message(STATUS "  build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  libsrt     : ${SRT_AVAILABLE}")
-message(STATUS "  ALSA       : ${ALSA_AVAILABLE} (reserved, no module uses it yet)")
+message(STATUS "  ALSA       : ${ALSA_AVAILABLE} (RAVENNA backend)")
 message(STATUS "  tests      : ${WITH_TESTS}")
 message(STATUS "  web UI     : ${WITH_WEBUI} (not implemented yet)")
 message(STATUS "")
