@@ -1,0 +1,5 @@
+# macOS
+.DS_Store
+
+# Local scratch space used by some agent workflows. Not a shared artefact.
+.scratch/
