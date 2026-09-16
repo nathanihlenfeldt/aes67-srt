@@ -18,8 +18,10 @@ the open questions are in the specification.
 - **`docs/ROADMAP.md`** — what comes after v1: Opus and AAC-LC encoding for links
   that cannot carry 74 Mbit/s of PCM.
 - **`docs/agents/`** — how the engineering skills read this repository.
-- **`CONTEXT.md`** and **`docs/adr/`** — created lazily, when terms and decisions
-  actually land. Not written speculatively.
+- **`docs/adr/`** — decisions of record. `0001` is the wire format: our own frame in the SRT
+  stream rather than RTP-over-SRT. The rest arrive as decisions land.
+- **`CONTEXT.md`** — the glossary, created lazily when terms actually land. Not written
+  speculatively.
 
 The work is tracked as issues on
 [`nathanihlenfeldt/aes67-srt`](https://github.com/nathanihlenfeldt/aes67-srt/issues).

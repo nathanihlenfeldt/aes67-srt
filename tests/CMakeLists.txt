@@ -2,7 +2,8 @@
 # real daemon, and the modules that will are compiled in behind AUTO options.
 add_executable(aes67-srt-tests
   test_main.cpp
-  test_config.cpp)
+  test_config.cpp
+  test_wire.cpp)
 
 target_link_libraries(aes67-srt-tests PRIVATE aes67-srt-core)
 target_compile_options(aes67-srt-tests PRIVATE -Wall -Wextra -Wno-unused-parameter)

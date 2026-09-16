@@ -102,7 +102,8 @@ set(AES67_SRT_SOURCES
   src/config.cpp
   src/log.cpp
   src/util.cpp
-  src/version.cpp)
+  src/version.cpp
+  src/wire/frame.cpp)
 
 add_library(aes67-srt-core STATIC ${AES67_SRT_SOURCES})
 target_include_directories(aes67-srt-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
