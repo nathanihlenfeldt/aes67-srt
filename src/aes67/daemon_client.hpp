@@ -71,18 +71,6 @@ struct SinkStatus {
   bool rtp_sac_error{false};
 };
 
-/**
- * One daemon stream.
- *
- * An id and a document, because that is what the daemon's API speaks: streams
- * are addressed by an integer index (`/api/sink/3`, `/api/source/3`) and
- * described by a JSON document this project builds.
- */
-struct Stream {
-  int id = 0;
-  json document;
-};
-
 class DaemonClient {
  public:
   virtual ~DaemonClient() = default;
