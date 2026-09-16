@@ -136,10 +136,23 @@ repeatable still. Anyone measuring this on the Pi should set the governor to `pe
 the script prints the command.
 
 **So what is true?** Encoding 64 channels of Opus costs **~14% of a fast desktop core**, decoding
-~4%. A Pi 5 core is perhaps three to five times slower at this work, which puts encoding somewhere
-between 40% and 70% of a core for 64 channels — tight on a four-core appliance that also has to
-carry the link, but not the impossibility an earlier version of this document implied. The honest
-position is that **the Pi number decides**, and it is the first thing section 7 should be read for.
+~4%. **And on the target hardware it is 43.32% of one Pi 5 core** (2.3× realtime), with decode at
+14.90% — measured 2026-09-16, governor at `performance`, best of three. The Pi is therefore **3×
+slower than the laptop** at this work, which is inside the three-to-five-times band predicted above.
+
+**The verdict, which the earlier version of this document got wrong in both directions:**
+
+- **It fits.** 43% of one core to encode 64 channels, and my probe runs the eight block encoders
+  sequentially on one thread. Eight threads, or four, would divide that across the Pi's four cores —
+  so the *machine* cost is closer to 11–15% when threaded, which a Pi can afford.
+- **But the codec is the entire CPU budget of phase 2.** PCM costs copies; Opus costs 43% of a core
+  single-threaded. A phase 2 implementation that does not thread per block will be CPU-bound on a
+  single core and will fail under load. **That is now a design requirement, not an optimisation.**
+- **The trade is a good one where it is needed**: nine times less bandwidth for 43% of one core
+  (unthreaded). For a link that cannot carry 74 Mbit/s, that is the whole point of phase 2.
+
+The honest position is that phase 2 is affordable on this appliance *if* the encoders are threaded
+per block, and that this must be designed in rather than discovered.
 
 **The correction is the lesson.** This project has now been wrong three times by reading rather than
 measuring (the 1456-byte payload ceiling, the 4 ms lookahead, and this), and once by measuring too

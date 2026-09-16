@@ -53,12 +53,50 @@ should be built in ignorance of the other.
 | **Adaptive playout buffer with corrections** | No continuous processing. ~1700 corrections/hour/link, each on all 64 channels at once, so the *size* of each correction is what matters and the count is a property of the clock pair alone | Whether a correction is audible on programme material, and with what crossfade — a listening test on hardware |
 | **Continuous asynchronous sample rate conversion** | Every sample of all 64 channels processed continually | The CPU cost on the target Pi. This is the number that decides the question, and it is not yet measured |
 
-## Recommendation
+## Measured on the target hardware, 2026-09-16
 
-**Do not choose between them yet** — the deciding fact is a listening test, not an argument. But the
-numbers already rule something out, and that is worth having before any code is written: a design
-that relies on corrections being *infrequent* will fail, because at 10 ppm they are not infrequent.
-If corrections are used, each one must be inaudible on its own merits.
+Raspberry Pi 5 Model B Rev 1.1, four cores, kernel 6.18.34, **governor `performance`** (which
+matters: see the note below). Full numbers in the report attached to issue #18.
+
+| Approach | Cost on the Pi, 64 channels of 48 kHz | Cost of the alternative |
+|---|---|---|
+| **Continuous ASRC** (`libsamplerate`, `SINC_FASTEST`) | **11.27% of one core** — 8.9× realtime, 0.176% per channel | — |
+| Slipping the playout buffer | no continuous CPU at all | ~1700 corrections an hour at 10 ppm, each of which must be **individually inaudible** |
+
+At a +10 ppm ratio, which is the correction the clock module would make continuously.
+
+## The decision
+
+**Continuous asynchronous sample rate conversion, not sample slipping.**
+
+The reasoning is not that 11% of a core is cheap — it is that it **dissolves the hardest requirement
+in the design**. The drift measurement said corrections come every ~2 seconds, so the slipping
+approach asked for 1700 proofs an hour that a correction cannot be heard. Resampling continuously
+means there are no corrections at all, and no audibility question to answer. Trading 11% of a core
+for the removal of an unverifiable quality claim is the best value in this project so far.
+
+Recorded as **ADR 0003**.
+
+## Two caveats on that number, both of which matter
+
+**It is the cheapest converter measured, not the best.** `SRC_SINC_FASTEST` is libsamplerate's
+lowest-quality sinc; `SINC_MEDIUM` and `SINC_BEST` cost proportionally more and this project values
+audio quality above CPU. The *shape* of the decision does not change — 11% has room — but the
+converter choice is a quality-versus-CPU question that needs its own measurement, and it belongs
+with the clock module's implementation rather than before it.
+
+**The ratio is constant, and a general ASRC does not exploit that.** The offset between two crystals
+is fixed at a few ppm, so a purpose-built fixed-ratio fractional resampler could be substantially
+cheaper than a general converter that expects the ratio to move. The measurement therefore bounds
+the design from above: any reasonable implementation will fit inside 11%.
+
+**On the governor, which is not a footnote:** every figure above was taken with the governor at
+`performance`, and the first Pi run — under `ondemand`, before the libraries were installed — could
+not take them at all. The lesson comes from the laptop, where repeated runs of the Opus probe varied
+by **2.7×** (39% against 14% of a core for identical work, from load alone). CPU numbers taken once,
+or under a power-saving governor, are not evidence. The script now warns about the governor and takes
+the best of three runs.
+
 
 ## Unresolved, and who owns it
 

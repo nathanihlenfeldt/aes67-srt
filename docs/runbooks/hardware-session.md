@@ -62,12 +62,18 @@ or encoding only some blocks, which the per-block payload type already allows. T
 number should say 312 samples / 6.50 ms; anything else is worth knowing before the delay line is
 built against it.
 
-**§8 Resampling.** This is the number that decides between continuously resampling (no sample
-corrections, but every sample processed) and slipping the playout buffer (no continuous cost, but
-~1700 corrections an hour, per `docs/research/clock-recovery.md`). Under ~20% of a core, continuous
-resampling is affordable and is the simpler design. Over ~50%, slips are the only affordable route
-and the work moves to making each one inaudible. **Between those, the audibility test decides, not
-the CPU number** — and that test needs ears, not a script.
+**§8 Resampling — measured, and it decided the design.** On the Pi 5 it costs **11.27% of one core**
+at 64 channels and +10 ppm, against a slipping design that needs ~1700 corrections an hour
+(`docs/research/clock-recovery.md`). **The decision is ADR 0003: continuous resampling.** Anything
+under ~20% was affordable; anything over ~50% would have forced slips and an audibility test. The
+converter used here is `SINC_FASTEST`, the cheapest, and the quality-versus-CPU choice among
+converters belongs with the clock module's implementation.
+
+**§7 Opus — measured, and it fits.** Encoding 64 channels costs **43.32% of one Pi 5 core**
+single-threaded (2.3× realtime), decoding 14.90%. Under ~30% would have made phase 2 a bandwidth
+story in the simplest sense; over ~80% would have made it a different product. At 43% the answer is
+"fits, but the codec *is* the CPU budget, so the encoders must be threaded per block" — a design
+requirement rather than an optimisation. The lookahead measured 312 samples / 6.50 ms.
 
 ## What this session does *not* cover
 
