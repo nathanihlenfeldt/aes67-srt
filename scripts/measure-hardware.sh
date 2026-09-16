@@ -166,6 +166,22 @@ fi
 printf '\n--- daemon binary\n'
 try "which" sh -c 'command -v aes67-daemon || echo "aes67-daemon not on PATH"'
 
+# Which daemon, and which driver commit. A version is the difference between a
+# finding someone can reproduce and a story about a machine.
+printf '\n--- daemon and driver versions\n'
+if have aes67-daemon; then
+  try "aes67-daemon --version" aes67-daemon --version
+fi
+if [ -d /opt/aes67-linux-daemon/.git ]; then
+  try "daemon source commit" git -C /opt/aes67-linux-daemon rev-parse --short HEAD
+fi
+if [ -d /usr/src/ravenna-alsa-lkm/.git ]; then
+  try "RAVENNA driver commit" git -C /usr/src/ravenna-alsa-lkm rev-parse --short HEAD
+fi
+if have dkms; then
+  try "dkms status" dkms status
+fi
+
 if ! curl -fsS --max-time 2 http://127.0.0.1:8080/api/config >/dev/null 2>&1; then
   printf '\n--- the daemon is not answering\n'
   note "Nothing is listening on 127.0.0.1:8080, so there is no surface to measure."
