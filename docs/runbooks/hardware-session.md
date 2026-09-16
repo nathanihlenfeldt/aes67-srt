@@ -19,6 +19,17 @@ cmake -S . -B build && cmake --build build --parallel
 bash scripts/measure-hardware.sh
 ```
 
+**If the appliance cannot clone this repository** (it is private), the same script is published as a
+public gist and needs no clone:
+
+```sh
+curl -fsSL https://gist.githubusercontent.com/nathanihlenfeldt/35d40add04d9449038f1071c2359bb5b/raw/measure-hardware.sh -o /tmp/measure.sh
+bash /tmp/measure.sh
+```
+
+It needs **no root**, installs nothing, and writes one report file in the directory you run it from.
+The only section it cannot cover without a clone is §3, the loopback tests, and it says so.
+
 It writes `hardware-report-<host>-<date>.txt`. **Send that whole file back** — including the parts
 that could not be measured, because a missing measurement says what the machine lacks.
 
