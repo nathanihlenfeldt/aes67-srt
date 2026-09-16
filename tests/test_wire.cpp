@@ -414,7 +414,8 @@ TEST_CASE(wire_slices_a_frame_into_messages_srt_will_accept) {
       encoded(make_frame(8, PayloadType::pcm_l24, 0));
   const std::vector<std::vector<uint8_t>> messages = fragments_of(bytes);
 
-  CHECK_EQ(messages.size(), static_cast<size_t>(7));
+  // 9312 bytes at 1316 per message: seven full messages and a short eighth.
+  CHECK_EQ(messages.size(), static_cast<size_t>(8));
 
   size_t total = 0;
   for (const std::vector<uint8_t>& message : messages) {

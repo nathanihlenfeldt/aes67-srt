@@ -133,13 +133,20 @@ LengthStatus frame_length(const uint8_t* data, size_t size, size_t* total,
                           std::string* error);
 
 /**
- * The largest message an SRT live-mode send will carry.
+ * The largest message an SRT live-mode send will carry by default.
  *
- * Live mode caps a single send at `SRTO_PAYLOADSIZE`, which "can't be larger than
- * 1456 bytes (1316 default)" (Haivision SRT v1.5.7,
- * `docs/API/API-functions.md:1926`). See docs/research/libsrt.md.
+ * The documentation says `SRTO_PAYLOADSIZE` "can't be larger than 1456 bytes
+ * (1316 default)" (Haivision SRT v1.5.7, `docs/API/API-functions.md:1926`), and
+ * the library *means* the default: sending 1456 bytes without first raising the
+ * option fails with "payload size: 1456 exceeds maximum allowed 1316". So this is
+ * 1316, not 1456, and the transport sets the option to match rather than relying
+ * on a default that could move under us.
+ *
+ * The cost of the smaller message is negligible: eight messages per frame rather
+ * than seven, which is 16 extra bytes of SRT header per 9312-byte frame, or
+ * 0.2%. See docs/research/libsrt.md.
  */
-constexpr size_t k_max_message_bytes = 1456;
+constexpr size_t k_max_message_bytes = 1316;
 
 /**
  * Slice a frame into messages of at most k_max_message_bytes, without allocating.

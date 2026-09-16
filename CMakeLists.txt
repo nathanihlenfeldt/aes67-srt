@@ -23,9 +23,18 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Every hardware / platform specific piece defaults to AUTO so the project
 # configures, builds and tests on a development machine (e.g. macOS) with no
 # ALSA, no libsrt and no aes67-daemon installed.
+#
+# NOTE: these three-state options are STRING cache entries, not BOOL options.
+# `option(WITH_SRT "..." AUTO)` looks equivalent and is not: the BOOL cache
+# entry cannot hold "AUTO", so CMake rewrites it to OFF, and from the second
+# configure onwards the detection block below is skipped entirely. That bug is
+# inherited from the sibling gateway and cost an afternoon here.
 # ---------------------------------------------------------------------------
-option(WITH_SRT "Build the SRT transport (AUTO = when libsrt is found)" AUTO)
-option(WITH_ALSA "Build the RAVENNA/ALSA backend (AUTO = when ALSA is found)" AUTO)
+set(WITH_SRT "AUTO" CACHE STRING "Build the SRT transport: ON, OFF or AUTO")
+set(WITH_ALSA "AUTO" CACHE STRING "Build the RAVENNA/ALSA backend: ON, OFF or AUTO")
+set_property(CACHE WITH_SRT PROPERTY STRINGS ON OFF AUTO)
+set_property(CACHE WITH_ALSA PROPERTY STRINGS ON OFF AUTO)
+
 option(WITH_TESTS "Build unit tests" ON)
 option(WITH_WEBUI "Build the web UI (requires npm)" OFF)
 option(FETCH_DEPS "Download missing dependencies with FetchContent" ON)
@@ -65,15 +74,20 @@ find_package(Threads REQUIRED)
 # rather than aspirational.
 set(SRT_AVAILABLE FALSE)
 if(NOT WITH_SRT STREQUAL "OFF")
-  find_path(SRT_INCLUDE_DIR srt/srt.h)
-  find_library(SRT_LIBRARY NAMES srt)
+  # HINTS: Homebrew on Apple Silicon installs under /opt/homebrew, which CMake
+  # does not always have on its default search path, and Intel/Homebrew uses
+  # /usr/local. Nothing else here needs a hint.
+  find_path(SRT_INCLUDE_DIR srt/srt.h
+    HINTS /opt/homebrew/include /usr/local/include)
+  find_library(SRT_LIBRARY NAMES srt
+    HINTS /opt/homebrew/lib /usr/local/lib)
   if(SRT_INCLUDE_DIR AND SRT_LIBRARY)
     set(SRT_AVAILABLE TRUE)
     message(STATUS "libsrt found: ${SRT_LIBRARY}")
   elseif(WITH_SRT STREQUAL "ON")
     message(FATAL_ERROR "WITH_SRT=ON but libsrt headers/library were not found")
   else()
-    message(STATUS "libsrt not found - reserved, no module uses it yet")
+    message(STATUS "libsrt not found - the transport will refuse to open a link")
   endif()
 endif()
 
@@ -101,6 +115,7 @@ set(AES67_SRT_SOURCES
   src/app.cpp
   src/config.cpp
   src/log.cpp
+  src/transport/link.cpp
   src/util.cpp
   src/version.cpp
   src/wire/frame.cpp)
@@ -114,6 +129,17 @@ target_compile_definitions(aes67-srt-core PUBLIC
   AES67_SRT_WITH_ALSA=$<BOOL:${ALSA_AVAILABLE}>)
 target_link_libraries(aes67-srt-core
   PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
+
+# libsrt is linked only when it was found.  The transport compiles either way and
+# reports why it cannot open a link, so a development machine without it still
+# builds, tests and reports honestly rather than shipping a stub that pretends.
+if(SRT_AVAILABLE)
+  target_include_directories(aes67-srt-core PUBLIC "${SRT_INCLUDE_DIR}")
+  target_link_libraries(aes67-srt-core PUBLIC "${SRT_LIBRARY}")
+  message(STATUS "transport: libsrt linked from ${SRT_LIBRARY}")
+else()
+  message(STATUS "transport: built without libsrt - Link::open will refuse")
+endif()
 
 add_executable(aes67-srt src/main.cpp)
 target_compile_options(aes67-srt PRIVATE -Wall -Wextra -Wno-unused-parameter)
@@ -180,8 +206,8 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/README.md
 message(STATUS "")
 message(STATUS "aes67-srt ${PROJECT_VERSION} configuration")
 message(STATUS "  build type : ${CMAKE_BUILD_TYPE}")
-message(STATUS "  libsrt     : ${SRT_AVAILABLE} (reserved, no module yet)")
-message(STATUS "  ALSA       : ${ALSA_AVAILABLE} (reserved, no module yet)")
+message(STATUS "  libsrt     : ${SRT_AVAILABLE}")
+message(STATUS "  ALSA       : ${ALSA_AVAILABLE} (reserved, no module uses it yet)")
 message(STATUS "  tests      : ${WITH_TESTS}")
 message(STATUS "  web UI     : ${WITH_WEBUI} (not implemented yet)")
 message(STATUS "")

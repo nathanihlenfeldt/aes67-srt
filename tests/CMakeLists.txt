@@ -3,6 +3,7 @@
 add_executable(aes67-srt-tests
   test_main.cpp
   test_config.cpp
+  test_transport.cpp
   test_wire.cpp)
 
 target_link_libraries(aes67-srt-tests PRIVATE aes67-srt-core)

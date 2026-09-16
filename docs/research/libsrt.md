@@ -100,13 +100,24 @@ smaller than one of our frames.
   MTU as configured with `SRTO_MSS`" (`docs/API/API-functions.md:1999-2002`). So a reassembler must
   accept any fragment up to the MSS, not the size we happen to send.
 
-**One ambiguity, recorded rather than resolved.** The socket-options reference says of
-`SRTO_PAYLOADSIZE`: "When set to 0, there's no limit for a single sending call"
+**One ambiguity, resolved by measurement rather than by reading.** The socket-options reference says
+of `SRTO_PAYLOADSIZE`: "When set to 0, there's no limit for a single sending call"
 (`docs/API/API-socket-options.md:1143`) and gives the range as `0..*`, while the API-functions
 reference states the 1456 ceiling for live mode (`:1926`) and the header defines
-`SRT_LIVE_MAX_PLSIZE = 1456` (`srtcore/srt.h:299`). These two claims are in tension. **We do not
-rely on the `0` case**: our fragments will be ≤1456 bytes, chosen by us, and the format needs no
-change to accommodate that.
+`SRT_LIVE_MAX_PLSIZE = 1456` (`srtcore/srt.h:299`). The documentation suggests 1316 is merely a
+*default* and 1456 is available. **The library disagrees**: sending a 1456-byte message without first
+raising the option fails, and this is what it says, verbatim —
+
+```
+SRT.cc: LiveCC: payload size: 1456 exceeds maximum allowed 1316
+srt_sendmsg: Operation not supported: Incorrect use of Message API (sendmsg/recvmsg)
+```
+
+So 1316 is *enforced*, not merely suggested. **`wire::k_max_message_bytes` is therefore 1316 rather
+than 1456**, and the transport sets `SRTO_PAYLOADSIZE` to that value explicitly rather than trusting
+a default that could move. The cost is one extra message per frame: 16 bytes of SRT header in 9312,
+about 0.2%. Had this been met in the field it would have looked like a mystery — a link that works
+with one channel and fails with eight.
 
 **What the transport therefore has to do** (ticket 07): fragment a frame across several messages,
 and reassemble. The reassembler needs no new format field, because a frame is self-describing — the
@@ -173,8 +184,13 @@ want the interval-based ones.
 | `pktRcvLoss` | packets | receiver | Presently missing packets (`statistics.md:78`) |
 | `msSndBuf` | ms | sender | Send buffer depth (`statistics.md:118`) |
 
-Accumulated totals (`pktRecvTotal`, `pktRcvLossTotal`, `pktRcvRetransTotal`, `pktRcvDropTotal`) and
-the decryption counters (`pktRcvUndecrypt`, `pktRcvUndecryptTotal`) exist too. **The whole "show me
+Accumulated totals exist alongside the interval figures (`pktRecvTotal`, `pktRcvLossTotal`,
+`pktRetransTotal`, `pktRcvDropTotal`), as do the decryption counters (`pktRcvUndecrypt`,
+`pktRcvUndecryptTotal`). **Note `pktRetransTotal` in particular**: the accumulated
+receiver-side retransmit counter does *not* follow the `pktRcv…` pattern that its own
+interval figure (`pktRcvRetrans`) suggests, so inferring the name from the documentation
+produces code that does not compile. The header is the authority (`srtcore/srt.h:313`
+against `:338`, verified against the installed 1.5.7). **The whole "show me
 the delay" requirement needs no invention: `msRcvTsbPdDelay` is the number, and `msRcvBuf` is its
 trend.**
 
@@ -209,6 +225,13 @@ a configuration flag. Better to know that before someone assumes a `bonded: true
   this ticket; it is the place to look if rendezvous misbehaves in the field.
 - **Unverifiable from documentation**: whether rendezvous succeeds through the specific NAT
   implementations at the two sites. That is a test on the real links, and it belongs to ticket 09.
+- **Measured here, and worth knowing before a site visit**: in rendezvous mode a frame sent
+  immediately after `srt_connect` returns is **discarded**. Both ends connect simultaneously, so
+  data sent before the handshake settles never arrives at all — the peer's `packets_received` stays
+  at zero while the sender's `srt_sendmsg` reports success. Sending repeatedly works normally, which
+  is what an appliance carrying a thousand frames a second does without thinking about it. But an
+  engineer who sends one test frame and sees nothing will reasonably conclude the link is broken.
+  In caller/listener this does not happen: `srt_connect` returning means the peer accepted.
 
 ## What this confirms, and what it corrects
 
