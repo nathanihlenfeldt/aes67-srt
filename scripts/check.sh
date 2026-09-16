@@ -52,6 +52,14 @@ cmake --build "${BUILD_DIR}" --parallel
 echo "==> tests"
 ctest --test-dir "${BUILD_DIR}" --output-on-failure
 
+# Run the suite directly as well. ctest hides the output of every test that
+# passes, and this is where the conditional tests announce themselves ("no libsrt
+# in this build: skipping ..."). A CI log that cannot show whether a test ran is
+# not evidence that it did — and the difference between "the loopback passed" and
+# "the loopback never ran" is the whole of ticket 07's proof.
+echo "==> tests, directly, for the summary and any skips"
+"${BUILD_DIR}/tests/aes67-srt-tests" | tail -6
+
 echo "==> config validation accepts the sample configurations"
 "${BUILD_DIR}/aes67-srt" -c config/aes67-srt.conf --validate
 "${BUILD_DIR}/aes67-srt" -c config/aes67-srt.dev.conf --validate
