@@ -46,9 +46,16 @@ fit" into "fits, at a quality cost the operator chose".
 | Opus | 128 kbit/s | 8.2 Mbit/s | ~9× less |
 | Opus | 64 kbit/s | 4 Mbit/s | ~18× less |
 
-**Latency cost is real and must be counted against the A/V budget.** Opus adds roughly **26.5 ms**
-(20 ms frame + lookahead) to the transport floor, which is headroom the operator loses when lining
-audio up with vision.
+**Latency cost is real and must be counted against the A/V budget.** An Opus encoder adds the frame
+duration **plus its algorithmic delay** to the transport floor: at 48 kHz that is **frame + 4 ms**,
+so **~24 ms** with 20 ms frames, ~14 ms at 10 ms, ~9 ms at 5 ms (`docs/research/opus.md`, which
+cites `opus_encoder.c:311-313`). Every millisecond of it is headroom the operator loses when lining
+audio up with vision, and it comes out of the same budget the clock module needs for drift.
+
+**Settle the figure on hardware before designing the delay line around it.** The widely quoted 26.5 ms
+for 20 ms frames implies a 6.5 ms lookahead, which the encoder's own code contradicts. The authority
+is `OPUS_GET_LOOKAHEAD`, queried at runtime (`opus_defines.h:500-502`) — not this document, not a blog
+post, and not the number above. `docs/research/opus.md` lists measuring it as an open item.
 
 **Policy — decided, and identical to PCM.** Codec mode keeps the same rule: **never drop audio,
 let delay grow, show the delay, alarm past the threshold. Quality changes only when a human
