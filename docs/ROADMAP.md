@@ -27,7 +27,10 @@ fit" into "fits, at a quality cost the operator chose".
 
 - **Opus first.** Royalty-free (BSD-3-Clause), and it is **native at 48 kHz**, which is the AES67
   rate — so it needs no resampling, unlike AAC at some rates. 2.5–60 ms frames, in-band FEC, DTX.
-  Encoder: `libopus`.
+  Encoder: `libopus`. **Researched: `docs/research/opus.md`** — the mechanism is the multistream API
+  (the single-stream API cannot carry 8 channels), coupling is an experiment rather than an
+  assumption, in-band FEC is **off** because SRT has already bought that resilience, and the latency
+  to budget is frame + 4 ms.
 - **AAC-LC second.** Not a schema problem but a **licensing** one: a patent pool applies to
   encoders shipped in a product, and FDK-AAC's licence is not GPL-compatible. It means ffmpeg's
   native AAC encoder or a licensed one, and an ADR when the time comes.

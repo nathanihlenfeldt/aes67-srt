@@ -6,9 +6,12 @@ internet: **64 channels — eight 8-channel blocks — of uncompressed L24 PCM a
 same binary acting as transmitter, receiver or both. Configured from a web UI,
 because it ships to other people's sites.
 
-**Status: skeleton.** The repository configures, builds, tests and validates its
-configuration. **It carries no audio and no network.** The plan, the decisions and
-the open questions are in the specification.
+**Status: the wire format and the SRT transport are built and tested.** The repository configures,
+builds, tests and validates its configuration, and it carries frames across a real SRT link in both
+directions — proven by loopback tests that run in CI on Linux and macOS. **It does not yet carry
+audio:** the ALSA ingest and playout, the clock reconciliation and the web UI are still to come. The
+plan, the decisions and the open questions are in the specification, and the measured facts are in
+`docs/research/`.
 
 ## Where things are
 
@@ -26,15 +29,25 @@ the open questions are in the specification.
   speculatively.
 
 The work is tracked as issues on
-[`nathanihlenfeldt/aes67-srt`](https://github.com/nathanihlenfeldt/aes67-srt/issues).
-Ticket 05 is this skeleton; 01–04 are the research that must precede the modules
-that need it; the numbered chain 06→15 is the build order.
+[`nathanihlenfeldt/aes67-srt`](https://github.com/nathanihlenfeldt/aes67-srt/issues):
+the numbered chain is the build order, issues #2–#5 are the research, and #1 is the specification.
 
 ## Building
 
-Requires CMake 3.16 or later and a C++17 compiler. Nothing else is required on a
-development machine: the platform pieces are `AUTO`, so a Mac with no ALSA and no
-daemon builds and tests the whole skeleton.
+Requires CMake 3.16 or later and a C++17 compiler.
+
+**libsrt is needed for the transport and is optional for everything else.** The platform pieces are
+`AUTO`, so on a machine without libsrt the project still builds, tests and reports honestly — every
+transport test skips itself and `Link::open` refuses with the reason rather than pretending. To build
+the transport:
+
+```sh
+brew install srt                     # macOS
+sudo apt install libsrt-openssl-dev  # Debian/Ubuntu
+cmake -S . -B build                  # libsrt is detected automatically
+```
+
+ALSA is Linux-only and not needed yet: the audio backend is still to be written.
 
 ```sh
 cmake -S . -B build

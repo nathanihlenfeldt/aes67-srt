@@ -53,4 +53,20 @@ Triage comments are ordinary GitHub comments and must open with `> *This was gen
 
 ## Historical note
 
-This repo has no ADRs and no `.out-of-scope/` entries yet — it was an empty directory when this setup ran. Both are created lazily (`docs/adr/` by `/domain-modeling` and `/grill-with-docs`, `.out-of-scope/` by `/triage` when an *enhancement* is rejected as `wontfix`). Read them when they appear; until then there is no prior rejection to surface against a new request.
+## Historical note
+
+This repository was created by `/setup-matt-pocock-skills` on 2026-09-16, from an empty directory:
+`git init`, a first commit, then
+`gh repo create nathanihlenfeldt/aes67-srt --private --source=. --remote=origin --push`. That is
+provenance, not current state.
+
+**`docs/adr/` is no longer empty**, and a triage run must read it:
+
+- `docs/adr/0001-own-wire-format-over-srt.md` — the frame format, **amended** to correct its
+  "one frame per SRT message" claim. The amendment matters to triage: a request to change anything
+  about framing or message sizes meets that decision.
+- `docs/adr/0002-licence-under-gpl-3-0.md` — GPL-3.0, accepted. A request touching licensing,
+  distribution or an incompatible dependency meets this one.
+
+There is still no `.out-of-scope/` directory: no enhancement has been rejected as `wontfix` yet, so
+there is no prior rejection to surface against a new request.

@@ -46,7 +46,12 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 
 ## In this repo
 
-**This is a brand-new repository.** It was an empty directory (no `.git`, no files, no remote) when `/setup-matt-pocock-skills` ran, so the tracker described above was stood up from scratch in the same session: `git init`, a first commit, then `gh repo create nathanihlenfeldt/aes67-srt --private --source=. --remote=origin --push`.
+**This repository was created here, and is no longer new.** It was an empty directory (no `.git`, no
+files, no remote) when `/setup-matt-pocock-skills` ran, so the tracker below was stood up from
+scratch in that session: `git init`, a first commit, then
+`gh repo create nathanihlenfeldt/aes67-srt --private --source=. --remote=origin --push`. That is
+provenance; the current state is that the repository has a specification, research notes, two ADRs
+and working code, with tickets tracked as issues above.
 
 - **Repo**: `nathanihlenfeldt/aes67-srt` — **private**, default branch `main`. `gh` is authenticated locally as `nathanihlenfeldt` (scopes `gist`, `read:org`, `repo`, `workflow`), so `gh` inside the clone resolves the repo with no `-R` flag.
 - **Explicit repo beats inference.** If `gh` is ever run from outside the clone, or the remote is changed, pass `-R nathanihlenfeldt/aes67-srt` rather than guessing.
