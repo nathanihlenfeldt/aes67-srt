@@ -17,6 +17,8 @@ the open questions are in the specification.
   boundaries are all in it.
 - **`docs/ROADMAP.md`** — what comes after v1: Opus and AAC-LC encoding for links
   that cannot carry 74 Mbit/s of PCM.
+- **`docs/research/`** — what was verified against primary sources, with citations. Start with
+  `libsrt.md`: it corrects an assumption the wire format's ADR was built on.
 - **`docs/agents/`** — how the engineering skills read this repository.
 - **`docs/adr/`** — decisions of record. `0001` is the wire format: our own frame in the SRT
   stream rather than RTP-over-SRT. The rest arrive as decisions land.
@@ -77,7 +79,7 @@ in a key name. `./scripts/check.sh` asserts this behaviour, so it cannot regress
 
 ## Licence
 
-**Not decided yet.** Unlike the sibling gateway — where PJSIP and `aes67-daemon`
-forced GPL-3.0 — libsrt is MPL-2.0, so this project's licence is a choice. It is
-recorded as an open item in the specification and as an acceptance criterion on
-ticket 01, and it must be settled before anything is distributed.
+**Proposed: GPL-3.0**, awaiting the owner's decision — `docs/adr/0002-licence-under-gpl-3-0.md`.
+Unlike the sibling gateway, where PJSIP and `aes67-daemon` forced GPL-3.0, libsrt is **MPL-2.0**:
+file-level copyleft that does not extend to the larger work. Our licence is therefore a choice
+rather than a constraint (`docs/research/libsrt.md`). Nothing is distributed until it is settled.

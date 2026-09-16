@@ -79,3 +79,23 @@ The link is SRT, which already guarantees delivery. But a CRC also catches
 *corruption* that is not loss — a miswritten length, a half-filled buffer, a bug
 in our own encoder — and a click in the programme audio is far more expensive
 than four bytes per frame.
+
+## Amendment, 2026-09-16: a frame does not fit in one SRT message
+
+Ticket 02's research found that this ADR's opening claim — "one frame per SRT message" — is
+**wrong**. Correcting a decision of record with an amendment rather than by quietly editing the
+text above, because the wrong version is what informed the work between the two.
+
+Live mode caps a single send at `SRTO_PAYLOADSIZE`, "which can't be larger than 1456 bytes (1316
+default)" (`Haivision/srt` `v1.5.7`, `docs/API/API-functions.md:1926`; the constants are at
+`srtcore/srt.h:295,299`). A frame of eight L24 blocks is **9312 bytes**. **A frame therefore spans
+roughly seven SRT messages**, and fragmenting and reassembling is the transport's job (ticket 07),
+not the format's.
+
+What is *not* affected: the format. The ceiling applies to what one `srt_sendmsg` call may carry,
+not to what a frame may contain, so no field, size or version changes. Reassembly needs no new
+header field either, because a frame is self-describing — the frame header gives the block count
+and each block header gives the length of the payload after it, so the total is computable as bytes
+arrive, and SRT guarantees ordering.
+
+See `docs/research/libsrt.md` for the citations, and for the rest of what that research changed.

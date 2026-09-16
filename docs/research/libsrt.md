@@ -1,0 +1,261 @@
+# libsrt, verified against v1.5.7
+
+Status: researched 2026-09-16 for ticket 02. Every claim below is cited by file and line at the
+pinned tag **`v1.5.7`** (released 2026-08-28, the latest at the time of writing).
+
+## How to reproduce
+
+```
+gh api repos/Haivision/srt/releases/latest --jq .tag_name      # v1.5.7
+curl -fsS https://raw.githubusercontent.com/Haivision/srt/v1.5.7/srtcore/srt.h
+curl -fsS https://raw.githubusercontent.com/Haivision/srt/v1.5.7/docs/API/API-functions.md
+curl -fsS https://raw.githubusercontent.com/Haivision/srt/v1.5.7/docs/API/API-socket-options.md
+curl -fsS https://raw.githubusercontent.com/Haivision/srt/v1.5.7/docs/API/statistics.md
+curl -fsS https://raw.githubusercontent.com/Haivision/srt/v1.5.7/docs/features/encryption.md
+curl -fsS https://raw.githubusercontent.com/Haivision/srt/v1.5.7/docs/features/socket-groups.md
+curl -fsS https://raw.githubusercontent.com/Haivision/srt/v1.5.7/CMakeLists.txt
+```
+
+Note the header path: at this tag the public headers are `srtcore/srt.h` and `srtcore/udt.h`, not
+`srt/srt.h` as on `master`. `.clang-format` and CI are not affected, but anyone following
+`master`-based directions will fetch 404s — which is why this document pins the tag rather than a
+branch.
+
+## What this changes
+
+Five findings that alter decisions we had already made. Read this section first.
+
+**1. A frame cannot be one SRT message, so ADR 0001 is wrong on this point.** Live mode caps a
+single send at `SRTO_PAYLOADSIZE`, which "can't be larger than 1456 bytes (1316 default)"
+(`docs/API/API-functions.md:1926`; the constants are `SRT_LIVE_DEF_PLSIZE = 1316` and
+`SRT_LIVE_MAX_PLSIZE = 1456` at `srtcore/srt.h:295,299`). Our frame is **9312 bytes**, so one frame
+spans roughly seven SRT messages. **The frame format itself is unaffected** — it is what we put
+*inside* messages — but the transport must fragment and reassemble, and ADR 0001's "one frame per
+SRT message" is hereby corrected (see the amendment on that ADR). This is precisely the assumption
+ticket 02 existed to check.
+
+**2. `TLPKTDROP` is ON by default in live mode, and must be explicitly disabled.** Its documented
+default is "true in Live mode, false in File mode" (`docs/API/API-socket-options.md:1685`). Decision 6
+says audio is never dropped, so both ends must set `SRTO_TLPKTDROP = 0` explicitly. Worse, the same
+option "is automatically enabled in sender if receiver supports it"
+(`docs/API/API-socket-options.md:1682`), so leaving it on at one end can re-enable it at the other.
+The saving grace: `pktRcvDrop` counts exactly the packets that mechanism discards
+(`docs/API/statistics.md:95`, `:162`), so **"we never drop audio" is directly assertable** rather
+than merely intended — that is now an acceptance criterion on ticket 07, not a hope.
+
+**3. Bonding is a build-time opt-in, and incompatible with rendezvous.** `ENABLE_BONDING` defaults
+to **OFF** (`CMakeLists.txt:174`), so a distribution's libsrt may not contain the feature at all,
+and `SRTO_GROUPCONNECT` is compiled out entirely (`srtcore/srt.h:19,227` region,
+`srtcore/core.cpp:935`). Groups also "support only caller-listener mode"
+(`docs/API/API-socket-options.md:273`) — which rules out the rendezvous mode decision 5 leans on.
+Redundancy therefore stays out of v1, and when it arrives it will not be a drop-in: it changes the
+connection model.
+
+**4. `120 ms` is right, but latency is negotiated, not set.** Live mode's default
+`SRTO_RCVLATENCY` is **120 ms** (`docs/API/API-socket-options.md:1348`), matching the
+specification's `latency_ms: 120`. The *actual* delay is decided during the handshake as "the
+maximum of the `SRTO_RCVLATENCY` value and the value of `SRTO_PEERLATENCY` set by the peer"
+(`docs/API/API-socket-options.md:1354`). So our 100–200 ms target is a property of the *pair*, not
+of one appliance: a peer configured at 400 ms gives a 400 ms link regardless of what we set. The UI
+must show the negotiated value, not the configured one.
+
+**5. The UI's numbers already exist as statistics.** `srt_bstats` and `srt_bistats`
+(`srtcore/srt.h:868,870`) expose RTT, bandwidth, receive-buffer depth, the TsbPd delay and drop
+counters. See the table below.
+
+## Licence
+
+**MPL-2.0**, and it obliges us to nothing.
+
+- `LICENSE:1` reads "Mozilla Public License Version 2.0"; the file is the unmodified MPL 2.0 text
+  and the GitHub API reports `MPL-2.0` for the repository.
+- MPL-2.0 is **file-level** copyleft: its obligations attach to modified MPL-covered *files* that
+  are distributed. We do not modify libsrt, we link it, and MPL-2.0 expressly does not extend to
+  the larger work (`LICENSE:373` region, the "Incompatible With Secondary Licenses" notice and the
+  Exhibit A notices at `:359`). **Our project may carry any licence**, including a permissive one,
+  and including GPL-3.0.
+
+This is a factual finding only. The *choice* of our own licence is the project owner's, and is
+recorded separately as ADR 0002 — which is written as a **proposal**, not a decision.
+
+## Message boundaries and the live-mode ceiling
+
+SRT preserves message boundaries, but live mode caps how big a message may be, and that cap is far
+smaller than one of our frames.
+
+- **Sending**: "In **live mode**, you are only allowed to send up to the length of
+  `SRTO_PAYLOADSIZE`, which can't be larger than 1456 bytes (1316 default)"
+  (`docs/API/API-functions.md:1926`). Exceeding it is `SRT_EINVALMSGAPI`. In live and file/message
+  mode a successful send always returns `len` — it does not partially send
+  (`docs/API/API-functions.md:1937`).
+- **Receiving**: live mode "behaves as in **file/message mode**, although the number of bytes
+  retrieved will be at most the maximum payload of one MTU" (`docs/API/API-functions.md:1997`). One
+  call returns one message's worth of bytes, never a partial message
+  (`docs/API/API-functions.md:1990`).
+- **Only the message API exists in live mode** (`docs/API/API-socket-options.md:923-924`), which is
+  what makes the boundary-preserving behaviour above automatic rather than something we implement.
+- **The receiver cannot know our fragment size.** "The `SRTO_PAYLOADSIZE` value configured by the
+  sender is not negotiated, and not known to the receiver. The `SRTO_PAYLOADSIZE` value set on the
+  SRT receiver is mainly used for heuristics. However, the receiver is prepared to receive the whole
+  MTU as configured with `SRTO_MSS`" (`docs/API/API-functions.md:1999-2002`). So a reassembler must
+  accept any fragment up to the MSS, not the size we happen to send.
+
+**One ambiguity, recorded rather than resolved.** The socket-options reference says of
+`SRTO_PAYLOADSIZE`: "When set to 0, there's no limit for a single sending call"
+(`docs/API/API-socket-options.md:1143`) and gives the range as `0..*`, while the API-functions
+reference states the 1456 ceiling for live mode (`:1926`) and the header defines
+`SRT_LIVE_MAX_PLSIZE = 1456` (`srtcore/srt.h:299`). These two claims are in tension. **We do not
+rely on the `0` case**: our fragments will be ≤1456 bytes, chosen by us, and the format needs no
+change to accommodate that.
+
+**What the transport therefore has to do** (ticket 07): fragment a frame across several messages,
+and reassemble. The reassembler needs no new format field, because a frame is self-describing — the
+28-byte header gives the block count, and each 8-byte block header gives the length of the payload
+that follows, so the total length is computable as bytes arrive. SRT guarantees ordering, so the
+parser can be a simple accumulator. **The frame format itself is unchanged by all of this**: what a
+message contains was never part of ADR 0001, only what a *frame* contains.
+
+## Latency
+
+- Live mode's default `SRTO_RCVLATENCY` is **120 ms**; file mode's is 0
+  (`docs/API/API-socket-options.md:1348`). Our spec's `latency_ms: 120` default is therefore
+  exactly the library default, which is a good sign rather than a coincidence.
+- **Latency is negotiated between the two ends**, as "the maximum of the `SRTO_RCVLATENCY` value and
+  the value of `SRTO_PEERLATENCY` set by the peer" (`docs/API/API-socket-options.md:1354`). A peer
+  configured at 400 ms produces a 400 ms link no matter what we set. *The UI must display the
+  negotiated value, not the configured one* — obtainable as `msRcvTsbPdDelay` (below).
+- Latency is not the send-to-receive time. It is "only used to add an extra delay (at the receiver
+  side) to the time when the packet 'should' arrive", and that delay "is used to compensate for two
+  things: an extra network delay …, or a packet retransmission" (`docs/features/latency.md:41-49`).
+  That is precisely the buffer our decision 7 spends: enough delay to absorb retransmits at
+  ~148 Mbit/s.
+- Time-based delivery is `SRTO_TSBPDMODE`, default **true in live mode, false in file mode**
+  (`docs/API/API-socket-options.md:1729`).
+
+**Unverified, and it matters.** With `TLPKTDROP` disabled, a packet that arrives *after* its play
+time should be delivered late rather than discarded — which is the mechanism our entire "delay
+grows, audio is never lost" policy rests on. The documentation supports the intent (the latency
+buffer "compensates" for retransmission) but does not state the late-arrival behaviour in those
+words, and it does not say what the application sees. **This is a measurement, not a reading, and
+ticket 07 owns it**: starve a link deliberately and assert that (a) no frame is lost, (b) the
+reported delay increases, and (c) `pktRcvDrop` stays at zero.
+
+## Encryption
+
+- `SRTO_PASSPHRASE`: "Crypto PBKDF2 Passphrase (must be 10..79 characters, or empty to disable
+  encryption)" (`srtcore/srt.h:200`). **Our configuration validation already enforces exactly
+  10..79** — that rule was written as a guess in ticket 05 and is now verified against the header.
+- The cipher is "AES in counter mode (AES-CTR) … with a short lived key", the key being "randomly
+  generated by the sender and transmitted within the stream … wrapped with another longer-term key,
+  the Key Encrypting Key (KEK)" (`docs/features/encryption.md:95,97`). Key derivation is PBKDF2
+  (`docs/features/encryption.md:91`); rotation is governed by `SRTO_KMREFRESHRATE` and
+  `SRTO_KMPREANNOUNCE` (`srtcore/srt.h:224-225`).
+- **The CPU cost on a Pi is unmeasured.** AES-CTR is inexpensive per byte, but "inexpensive" is not
+  a number and 148 Mbit/s of it is not nothing. Ticket 07 measures it on the target hardware before
+  we enable encryption by default.
+
+## Statistics for the UI
+
+`srt_bstats(sock, &stats, 0)` and `srt_bistats(sock, &stats, 0, 0)` fill an `SRT_TRACEBSTATS`
+(`srtcore/srt.h:868,870`). Statistics come in three flavours — accumulated, interval-based, and
+instantaneous (`docs/API/statistics.md:34-36`) — so gauges want the instantaneous ones and rates
+want the interval-based ones.
+
+| Field | Unit | Direction | What it gives us |
+|---|---|---|---|
+| `msRcvTsbPdDelay` | ms | receiver | **The negotiated latency — the number the UI must label "delay"** (`statistics.md:123`) |
+| `msRcvBuf` | ms | receiver | Buffer depth now: the "delay is growing" signal (`statistics.md:122`) |
+| `msRTT` | ms | both | Round-trip time (`statistics.md:110`) |
+| `mbpsBandwidth` | Mbps | both | Estimated link capacity (`statistics.md:111`) |
+| `mbpsRecvRate` | Mbps | receiver | Actual throughput, to compare against the 74.5 Mbit/s we expect (`statistics.md:90`) |
+| `pktRcvDrop` | packets | receiver | **Packets `TLPKTDROP` discarded: must stay 0** (`statistics.md:95`, defined at `:162`) |
+| `pktRcvRetrans` | packets | receiver | Retransmissions received — "the link is working for it" (`statistics.md:80`) |
+| `pktRcvLoss` | packets | receiver | Presently missing packets (`statistics.md:78`) |
+| `msSndBuf` | ms | sender | Send buffer depth (`statistics.md:118`) |
+
+Accumulated totals (`pktRecvTotal`, `pktRcvLossTotal`, `pktRcvRetransTotal`, `pktRcvDropTotal`) and
+the decryption counters (`pktRcvUndecrypt`, `pktRcvUndecryptTotal`) exist too. **The whole "show me
+the delay" requirement needs no invention: `msRcvTsbPdDelay` is the number, and `msRcvBuf` is its
+trend.**
+
+## Bonding and groups: not a v1 path, and not a drop-in later
+
+- **It is a build-time feature.** `option(ENABLE_BONDING "Should the bonding functionality be
+  enabled?" OFF)` (`CMakeLists.txt:174`), with a deprecated alias still handled
+  (`CMakeLists.txt:877-881`). Code is compiled conditionally: `SRTO_GROUPCONNECT` appears only under
+  `#if ENABLE_BONDING` (`srtcore/core.cpp:935`). **A distribution's libsrt may therefore contain no
+  bonding support at all**, and we cannot assume the option exists at runtime.
+- **It is incompatible with our connection strategy.** Groups "support only caller-listener mode"
+  and `SRTO_TRANSTYPE` "live mode is the only supported for groups"
+  (`docs/API/API-socket-options.md:273,275`). Decision 5 leans on **rendezvous** to get both ends
+  through NAT unattended, so bonding and that strategy are mutually exclusive as things stand.
+- In main/backup mode "only one link at a time delivers any useful data"
+  (`docs/features/socket-groups.md:53`).
+
+Redundancy is already a non-goal for v1, so nothing changes today. What changes is the *cost* of
+revisiting it: it is a connection-model change plus a build requirement on the shipped library, not
+a configuration flag. Better to know that before someone assumes a `bonded: true`.
+
+## NAT and unattended operation
+
+- `SRTO_RENDEZVOUS` defaults to `false`, and "both sides must set this and both must use the
+  procedure of `srt_bind` and then `srt_connect` (or `srt_rendezvous`) to one another"
+  (`docs/API/API-socket-options.md:1444-1446`).
+- Rendezvous is therefore a **coordinated configuration, not a discovery mechanism**: both
+  appliances must be told about each other, and there is no server or NAT-assist role. That is
+  acceptable for an appliance configured once at each end, but it is an operational constraint worth
+  writing down: **the peer address must be known at both ends in rendezvous mode**.
+- `docs/features/handshake.md` (1565 lines) covers the handshake in depth and has not been read for
+  this ticket; it is the place to look if rendezvous misbehaves in the field.
+- **Unverifiable from documentation**: whether rendezvous succeeds through the specific NAT
+  implementations at the two sites. That is a test on the real links, and it belongs to ticket 09.
+
+## What this confirms, and what it corrects
+
+| Our decision or assumption | Status after this research |
+|---|---|
+| Own frame format rather than RTP-over-SRT (ADR 0001) | **Holds.** The ceiling applies to *messages*, not frames; the format is untouched |
+| "One frame per SRT message" (ADR 0001) | **Wrong, and corrected** by an amendment to that ADR: a frame spans about seven messages |
+| `latency_ms: 120` as the default | Confirmed — it is the library's live-mode default |
+| 100–200 ms transport target (decision 7) | Holds, but it is *negotiated* as the maximum of both ends' settings; the UI must show the negotiated value, not ours |
+| Never drop audio, `TLPKTDROP` unused (decision 6) | **Needs explicit work**: the default is *true* in live mode and the sender can auto-enable it. Disable at both ends, and assert `pktRcvDrop == 0` |
+| Passphrase validation of 10..79 characters | Confirmed exactly against `srtcore/srt.h:200` |
+| Redundancy out of v1 | Confirmed, and the cost of revisiting it is now known: build-time gated, rendezvous-incompatible |
+| Public internet, both ends NAT'd, unattended (decision 5) | Rendezvous works but is a coordinated configuration; bonding would force one end to be reachable |
+| Pi-class CPU budget | Encryption cost at 148 Mbit/s is **unmeasured** |
+
+## Unresolved: what must be measured or read next
+
+1. **Late-arrival behaviour with `TLPKTDROP` disabled.** Decision 6 rests entirely on "the packet
+   still arrives, only later". The docs support the intent but never state it. **Measure it in
+   ticket 07**: starve a link deliberately and assert no frame is lost, the delay grows, and
+   `pktRcvDrop` stays at zero.
+2. **AES-CTR cost at 148 Mbit/s on the target Pi.** Ticket 07.
+3. **Rendezvous through the actual site NATs.** Ticket 09, on the real links.
+4. **Whether the shipped libsrt has bonding compiled in.** Depends on the distribution package that
+   ticket 15's installer selects. Recorded here so that nobody assumes it.
+5. **Buffer sizing at 148 Mbit/s.** `docs/API/configuration-guidelines.md:17` (the default receiver
+   buffer is 8192 packets) and `SRTO_SNDBUF`/`SRTO_RCVBUF` are the next sources. Not researched
+   here, and ticket 07 will likely need them.
+6. **The `SRTO_PAYLOADSIZE = 0` tension.** Sidestepped rather than resolved: we choose our own
+   fragment size below 1456 and do not depend on either reading being correct.
+
+## Sources
+
+All at tag `v1.5.7`. Nothing upstream was copied into this repository — the files were read in a
+temporary directory and are cited, not vendored, in keeping with `AES67-VSC` ADR-0005.
+
+| File | Used for |
+|---|---|
+| `LICENSE` | MPL-2.0, and what it does and does not oblige |
+| `srtcore/srt.h` | Payload-size constants, passphrase rule, option enums, statistics API |
+| `srtcore/core.cpp` | Conditional compilation of bonding |
+| `CMakeLists.txt` | `ENABLE_BONDING` default |
+| `docs/API/API-functions.md` | Send/receive semantics, message boundaries, the live-mode ceiling |
+| `docs/API/API-socket-options.md` | Defaults for `SRTO_RCVLATENCY`, `SRTO_TLPKTDROP`, `SRTO_TSBPDMODE`, `SRTO_PAYLOADSIZE`, `SRTO_RENDEZVOUS`; group restrictions |
+| `docs/API/statistics.md` | The statistics surface available to the UI |
+| `docs/API/configuration-guidelines.md` | Receiver buffer sizing — the next source ticket 07 needs |
+| `docs/features/latency.md` | What the latency buffer actually compensates for |
+| `docs/features/encryption.md` | AES-CTR, KEK, PBKDF2 |
+| `docs/features/socket-groups.md`, `bonding-intro.md`, `bonding-main-backup.md` | Bonding behaviour and its restrictions |
+| `docs/features/handshake.md` | Not read for this ticket; the reference if rendezvous misbehaves |
