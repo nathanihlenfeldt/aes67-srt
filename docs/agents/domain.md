@@ -55,9 +55,10 @@ If your output contradicts an existing ADR, surface it explicitly rather than si
 **Single-context.** There is no `CONTEXT-MAP.md` and no monorepo layout (no `pnpm-workspace.yaml`, no `workspaces` field, no populated `packages/*`), so the single-context rules above apply as written: one `CONTEXT.md` at the root and one `docs/adr/`.
 
 `docs/adr/` **exists now** — `0001` (the wire format, with an amendment correcting it), `0002` (the
-licence), `0003` (how the two clock domains are reconciled) and `0004` (the second product that
-shares this core). Read the ones that touch what you are working on; the amendment to 0001 is the
-reason to check rather than assume.
+licence), `0003` (how the two clock domains are reconciled), `0004` (the second product that shares
+this core) and `0005` (how that product reaches CoreAudio, *proposed* rather than settled). Read the
+ones that touch what you are working on; the amendment to 0001 is the reason to check rather than
+assume.
 
 `CONTEXT.md` still does not exist. It is meant to appear lazily via `/domain-modeling` when terms
 actually get resolved — do not create it speculatively.

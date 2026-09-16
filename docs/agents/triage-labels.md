@@ -75,6 +75,10 @@ provenance, not current state.
   and of Linux assumptions. A request that would put any of those inside `wire`, `transport` or
   `engine` meets this one, and a request for a *macOS runtime target for the appliance* still meets
   the spec's non-goals.
+- `docs/adr/0005-macos-endpoint-binds-to-a-coreaudio-device.md` — **proposed, not yet adopted**: that
+  application would bind to an existing CoreAudio device instead of shipping a system audio driver. A
+  request to write a virtual device driver meets this one, and so does anything that would put
+  CoreAudio types inside the shared core.
 
 There is still no `.out-of-scope/` directory: no enhancement has been rejected as `wontfix` yet, so
 there is no prior rejection to surface against a new request.

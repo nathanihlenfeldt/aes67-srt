@@ -133,33 +133,74 @@ stops being a style preference and becomes a constraint on every future commit.
 can start before the appliance's own tickets finish without waiting for anything. It is the only
 thing on this roadmap for which that is true.
 
-### Three questions decide whether it is even the product described above
+### Settled: it is the family's endpoint, not an SRT bridge
 
-1. **Whose audio does it carry — ours, or anybody's?** If it only ever talks to this project's
-   appliance, it is *the family's macOS endpoint* and the wire format is the whole story. If it must
-   also talk to ffmpeg, vMix or a third-party SRT sender, then plain SRT audio has to be accepted and
-   emitted too, the wire format becomes one of two payload conventions, and the product is a general
-   SRT audio bridge. **Most of this page changes shape depending on the answer**, so it is the first
-   thing to settle.
-2. **A virtual device, or a bridge to one that already exists?** A virtual device means an
-   `AudioServerPlugin` bundle installed under `/Library/Audio/Plug-Ins/HAL` — the kext-free mechanism
-   BlackHole uses, and *to be confirmed as research rather than taken from this page*. It also means
-   a second artefact to build, sign and notarise, and the first time this project has shipped a macOS
-   bundle of any kind. Bridging to an existing or aggregate CoreAudio device is much less work and
-   much less useful.
-3. **Where does Float32 meet bytes?** CoreAudio's native format is Float32 and a DAW works in float;
-   this project's audio path is deliberately bytes (ADR 0001). The conversion has to happen exactly
-   once and be named somewhere. It is the first genuine tension with the byte-verbatim principle, and
-   it is a decision rather than a detail.
+**Decided 2026-09-16: this application only ever talks to this project's appliance** — appliance in
+the field, Mac in the studio. That collapses the work rather than expanding it: one wire format, one
+block structure, one 1 ms period, one never-drop policy, and a configuration in the same shape as the
+appliance's. No MPEG-TS, no SDP, no second payload convention, no interop matrix.
 
-### One question this product does *not* get to re-argue
+### Architecture (recommended, and ADR 0005 records it)
 
-The Mac's CoreAudio device runs on the host clock while the SRT stream runs on the sender's — two
-independent 48 kHz domains, which is exactly the problem **ADR 0003** settled by measurement, with
-the machinery already specified (continuous resampling at 11.27% of one Pi 5 core). What *is* fresh
-is whether the virtual device owns the host clock or slaves to the stream: `AES67-VSC` ADR 0002
-answered that for Windows as "the virtual sound card owns the clock", and that reasoning does not
-transfer to CoreAudio unchanged.
+Two facts about CoreAudio invert the appliance's model, and both come from the platform rather than
+from taste:
+
+- **The device calls us; on the Pi, we called the device.** There, the engine paces itself by blocking
+  in `read()`. Here, CoreAudio drives a *render callback* at its own I/O cycle and expects the data to
+  be there. The two sides never meet directly.
+- **That callback is realtime.** No allocation, no locks that can block, no logging, no syscalls.
+
+So the boundary between them is a **lock-free single-producer/single-consumer ring per direction** —
+and the useful part is that this boundary is already `audio::AudioBackend`:
+
+| Piece | Where | New? |
+|---|---|---|
+| `wire`, `transport`, `engine` | the shared core, unchanged | no |
+| `CoreAudioBackend`: an AudioUnit on a CoreAudio device, rings inside it; `read()`/`write()` on the engine side, the render callback on the device side | the application | **yes, one file** |
+| Float32 ↔ `s24_3le` conversion | the application's side of the ring, beside the wire format | part of the above |
+| Resampler (ADR 0003) | **the receive path only** | reuse |
+| UI: device picker, link configuration, status | the application | yes |
+
+**Where Float32 meets bytes is no longer a worry, and that is verified rather than assumed.** CoreAudio
+is natively 32-bit float, and BlackHole's documentation states its 32-bit float is "lossless for up to
+24-bit integer" — so the conversion is lossless in the direction that matters, and the byte-verbatim
+principle (ADR 0001) survives meeting a float-native platform. The conversion happens once, on the
+application's side of the ring, as ordinary testable C++ rather than code in a realtime callback.
+
+**The clock answer is asymmetric, and that halves the work.** We do not own the Mac's device clock —
+CoreAudio and the DAW do — so the incoming stream must be rate-adapted to it, while the outgoing
+direction needs nothing at all, because the appliance's own clock module already reconciles what
+arrives. Note where this differs from `AES67-VSC` ADR 0002 ("the virtual sound card owns the clock"):
+that reasoning holds when you *are* the device, and here we are a client of one. One resampler, one
+direction.
+
+### Two ways to be a device, and the first is much cheaper
+
+1. **Bind to a virtual device that already exists — recommended for v1.** An AudioUnit on a CoreAudio
+   device gives the DAW something to select, and needs no driver, no privileged install and no
+   notarised bundle. The obvious companion is **BlackHole**, verified 2026-09-16: **GPL-3.0**, which
+   is exactly this project's licence (ADR 0002), **64 channels** available, installed by `.pkg`.
+   *This corrects an earlier note on this page that called bridging to an existing device "much less
+   useful" — with a virtual loopback device it is no less useful and far less work.*
+2. **Ship our own virtual device — only if that dependency is unacceptable.** An `AudioServerPlugin`
+   loaded by `coreaudiod`, with shared-memory rings in place of in-process ones. Same realtime
+   discipline, now across a process boundary, and the first signed and notarised bundle this project
+   has shipped. Note also that a loopback device sums what is played into it, so a *duplex* bridge
+   needs either two devices or two disjoint channel groups on one — worth measuring before designing
+   the channel layout.
+
+The second is a second implementation of the same seam, which is exactly what ADR 0004 exists to keep
+possible. Doing the first does not foreclose it.
+
+### The order of work, cheapest risk first
+
+1. `CoreAudioBackend` against a real CoreAudio device, with the engine running end to end on the Mac
+   and **no appliance and no SRT involved**: the loopback test we already have, on real hardware.
+2. The rings and their realtime discipline, exercised by a test that starves and floods them — before
+   any UI exists to hide a mistake.
+3. Link the real `transport::Link` and point it at an appliance.
+4. The UI: device picker, link configuration, status.
+5. Only then, if ever, the virtual device and the installer.
 
 ### Non-goals for this product
 
