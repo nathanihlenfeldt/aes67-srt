@@ -1,8 +1,16 @@
 # Roadmap
 
-Status: agreed with the project owner (2026-09-16). The current phase is specified in
-`docs/spec/0001-aes67-srt.md`; this file holds what comes **after** it, so nothing here delays v1
-and nothing in v1 forecloses it.
+Status: agreed with the project owner (2026-09-16; extended the same day with the second product).
+The current phase is specified in `docs/spec/0001-aes67-srt.md`; this file holds what comes **after**
+it, so nothing here delays v1 and nothing in v1 forecloses it.
+
+Two different kinds of thing live here, and the difference matters:
+
+- **Phases 1 and 2 are capability steps of the appliance** — PCM, then lossy encoding. Same product,
+  same plumbing, and phase 2 is the reason v1 carries a per-block payload type at all.
+- **The second product is a different program that extends this one** — a macOS application that
+  bridges SRT to CoreAudio, at the end of this file. It shares the core and none of the plumbing
+  around it, which is what ADR 0004 is about.
 
 ## Phase 1 — PCM transport (current)
 
@@ -90,3 +98,71 @@ falls out of the v1 obligations above at no extra cost, and it is the main reaso
 **Out of scope even for phase 2.** Lossy *ingest* codecs other than Opus/AAC, per-channel adaptive
 bitrate, and any automatic quality reduction. Phase 2 widens the quality dial; it does not make
 the appliance change it by itself.
+
+## Second product — SRT to CoreAudio on macOS
+
+**Why.** Everything in phases 1 and 2 assumes the far end is equipment: the appliance exists so that
+a console or a DAW *somewhere else on the network* can be fed, and nobody listens in the path. But
+the commonest thing an operator wants at the *near* end is to **mix or process the audio live** — in
+a DAW, or in DaVinci Resolve's Fairlight page — and today that means a hardware codec or a bespoke
+arrangement per site.
+
+**What it is.** A standalone macOS application: SRT in or out, presented to CoreAudio as an audio
+device, so a DAW can select it and work live. The macOS counterpart of what `AES67-VSC` is on
+Windows — with the notable difference that Windows needed a kernel driver and macOS does not.
+
+**It is not the appliance with a different audio backend.** It carries no AES67, no PTP, no RAVENNA
+and no daemon: one side is SRT and the other is CoreAudio. That makes it a *smaller* program than the
+appliance, assembled from parts that already exist.
+
+**What it reuses is the point of putting it on this roadmap.** All three hard pieces are done and are
+platform-neutral C++17:
+
+| Module | State | What it gives the Mac application |
+|---|---|---|
+| `wire` | built, tested | blocks, sample position, per-block payload type, CRC |
+| `transport` | built, tested | SRT: latency, passphrase, never-drop policy, statistics |
+| `engine` | built, tested | the device ↔ frame ↔ link loops, **already running on macOS** |
+
+The one missing piece is a `CoreAudioBackend` — the same seam `NullBackend` and `RavennaBackend`
+already prove holds for two very different devices. **That is why ADR 0004 exists**: the moment a
+second product is real, "keep the core free of ALSA, libsrt-specific, daemon and Linux assumptions"
+stops being a style preference and becomes a constraint on every future commit.
+
+**It is not blocked on v1.** The core already builds and runs its whole test suite on macOS, so this
+can start before the appliance's own tickets finish without waiting for anything. It is the only
+thing on this roadmap for which that is true.
+
+### Three questions decide whether it is even the product described above
+
+1. **Whose audio does it carry — ours, or anybody's?** If it only ever talks to this project's
+   appliance, it is *the family's macOS endpoint* and the wire format is the whole story. If it must
+   also talk to ffmpeg, vMix or a third-party SRT sender, then plain SRT audio has to be accepted and
+   emitted too, the wire format becomes one of two payload conventions, and the product is a general
+   SRT audio bridge. **Most of this page changes shape depending on the answer**, so it is the first
+   thing to settle.
+2. **A virtual device, or a bridge to one that already exists?** A virtual device means an
+   `AudioServerPlugin` bundle installed under `/Library/Audio/Plug-Ins/HAL` — the kext-free mechanism
+   BlackHole uses, and *to be confirmed as research rather than taken from this page*. It also means
+   a second artefact to build, sign and notarise, and the first time this project has shipped a macOS
+   bundle of any kind. Bridging to an existing or aggregate CoreAudio device is much less work and
+   much less useful.
+3. **Where does Float32 meet bytes?** CoreAudio's native format is Float32 and a DAW works in float;
+   this project's audio path is deliberately bytes (ADR 0001). The conversion has to happen exactly
+   once and be named somewhere. It is the first genuine tension with the byte-verbatim principle, and
+   it is a decision rather than a detail.
+
+### One question this product does *not* get to re-argue
+
+The Mac's CoreAudio device runs on the host clock while the SRT stream runs on the sender's — two
+independent 48 kHz domains, which is exactly the problem **ADR 0003** settled by measurement, with
+the machinery already specified (continuous resampling at 11.27% of one Pi 5 core). What *is* fresh
+is whether the virtual device owns the host clock or slaves to the stream: `AES67-VSC` ADR 0002
+answered that for Windows as "the virtual sound card owns the clock", and that reasoning does not
+transfer to CoreAudio unchanged.
+
+### Non-goals for this product
+
+No video. No mixing, EQ, metering or plugins — the entire point is to hand the audio to something
+that already has them. No Windows or Linux build: if it is not macOS it is not this product, and the
+appliance covers the headless case.

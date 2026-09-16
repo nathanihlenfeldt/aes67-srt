@@ -67,6 +67,14 @@ provenance, not current state.
   about framing or message sizes meets that decision.
 - `docs/adr/0002-licence-under-gpl-3-0.md` — GPL-3.0, accepted. A request touching licensing,
   distribution or an incompatible dependency meets this one.
+- `docs/adr/0003-clock-reconciliation-by-resampling.md` — the two ends' clock domains are reconciled
+  by continuous resampling, decided by measurement. A request to reconcile them another way — slips,
+  PTP tunnelling, locking the far end — meets this one.
+- `docs/adr/0004-a-second-product-over-the-same-core.md` — the roadmap's macOS SRT-to-CoreAudio
+  application shares this code's core, which must therefore stay free of ALSA, of the daemon, of PTP
+  and of Linux assumptions. A request that would put any of those inside `wire`, `transport` or
+  `engine` meets this one, and a request for a *macOS runtime target for the appliance* still meets
+  the spec's non-goals.
 
 There is still no `.out-of-scope/` directory: no enhancement has been rejected as `wontfix` yet, so
 there is no prior rejection to surface against a new request.
