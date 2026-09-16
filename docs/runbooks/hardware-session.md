@@ -30,6 +30,27 @@ bash /tmp/measure.sh
 It needs **no root**, installs nothing, and writes one report file in the directory you run it from.
 The only section it cannot cover without a clone is §3, the loopback tests, and it says so.
 
+### Provisioning the daemon, without which sections 4 and 5 cannot be measured
+
+A bare Pi has no RAVENNA kernel module and no `aes67-daemon`, so §4 and §5 have nothing to measure.
+The same gist carries a provisioner:
+
+```sh
+curl -fsSL https://gist.githubusercontent.com/nathanihlenfeldt/35d40add04d9449038f1071c2359bb5b/raw/install-daemon.sh -o /tmp/install-daemon.sh
+sudo bash /tmp/install-daemon.sh          # add --dry-run to print every command first
+```
+
+It installs the RAVENNA module through DKMS, builds `aes67-daemon`, installs its service and config,
+and pins the CPU governor. **Expect 20–40 minutes**, almost all of it Boost compiling. It is modelled
+closely on `aes67-sip`'s tested installer, including the two details that make it work — DKMS has to
+be told the module lands in `driver/`, and the daemon's config has to be pointed away from its
+default `lo`. If it fails, that installer is the fallback:
+
+```sh
+git clone --depth 1 https://github.com/nathanihlenfeldt/aes67-sip /tmp/aes67-sip
+sudo bash /tmp/aes67-sip/scripts/install.sh --skip-gateway
+```
+
 It writes `hardware-report-<host>-<date>.txt`. **Send that whole file back** — including the parts
 that could not be measured, because a missing measurement says what the machine lacks.
 
