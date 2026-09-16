@@ -79,7 +79,10 @@ in a key name. `./scripts/check.sh` asserts this behaviour, so it cannot regress
 
 ## Licence
 
-**Proposed: GPL-3.0**, awaiting the owner's decision — `docs/adr/0002-licence-under-gpl-3-0.md`.
-Unlike the sibling gateway, where PJSIP and `aes67-daemon` forced GPL-3.0, libsrt is **MPL-2.0**:
-file-level copyleft that does not extend to the larger work. Our licence is therefore a choice
-rather than a constraint (`docs/research/libsrt.md`). Nothing is distributed until it is settled.
+**GPL-3.0** — see `LICENSE`, and `docs/adr/0002-licence-under-gpl-3-0.md` for the reasoning. Unlike
+the sibling gateway, where PJSIP and `aes67-daemon` forced GPL-3.0, libsrt is **MPL-2.0**: file-level
+copyleft that does not extend to the larger work. The licence was therefore a choice rather than a
+constraint (`docs/research/libsrt.md`), and GPL-3.0 was chosen for consistency with the sibling
+appliance and for GPL-compatibility later.
+
+Distribution carries the source-availability obligation; building and testing do not.

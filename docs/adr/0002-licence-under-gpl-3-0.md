@@ -1,6 +1,8 @@
 # ADR 0002: Licence under GPL-3.0
 
-Status: **proposed** (2026-09-16) — awaiting the project owner's decision. Raised by ticket 02.
+Status: **accepted** (2026-09-16). Raised by ticket 02. Decided on the owner's instruction — the
+owner delegated this choice to the agent rather than reserving it, so the reasoning below is the
+rationale of record, not a proposal awaiting a signature.
 
 ## Context
 
@@ -13,9 +15,10 @@ That is unusual here. The sibling `aes67-sip` had no choice at all: PJSIP (GPLv2
 `aes67-daemon` (GPLv3) forced GPL-3.0 on it. In this project the licence is a decision rather than a
 constraint, which is exactly why it deserves an ADR instead of a copied `LICENSE` file.
 
-## Proposed decision
+## Decision
 
-**GPL-3.0**, matching the sibling appliance.
+**GPL-3.0**, matching the sibling appliance. `LICENSE` holds the canonical text as published by the
+Free Software Foundation, and nothing else in the repository carries a per-file notice.
 
 ## Reasoning
 
@@ -45,6 +48,9 @@ licensing question (see `docs/ROADMAP.md`).
 
 - `LICENSE` is the GPL-3.0 text, with no per-file notices beyond it, matching `aes67-sip`.
 - Distribution (ticket 15's installer) must make source available — already the sibling's
-  requirement, and the reason ticket 15 asks for this to be settled before it ships a binary.
-- **Until this ADR is accepted, nothing is distributed.** The repository may be built, tested and
-  published as source freely; distribution of a *binary* is what triggers the obligation.
+  requirement, and the reason ticket 15 asked for this to be settled first. **It is now settled, so
+  ticket 15 is unblocked on this point.**
+- **Distribution carries the GPL-3.0 source-availability obligation**, settled here so that ticket
+  15 can ship an installer without reopening it. The repository may also be built, tested and
+  published as source freely — publishing source is not distribution of a binary, and either way the
+  obligation is satisfiable and now known.
