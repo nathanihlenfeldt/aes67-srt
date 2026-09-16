@@ -3,12 +3,25 @@
 # Collects, on the appliance itself, the hardware measurements this project is
 # blocked on. Writes one report file to send back.
 #
-#   bash scripts/measure-hardware.sh              # writes hardware-report-<host>-<date>.txt
+#   bash measure-hardware.sh            # writes hardware-report-<host>-<date>.txt
+#   curl -fsSL <url> -o /tmp/measure.sh && bash /tmp/measure.sh
 #
-# Why a script rather than a set of instructions: every one of these values
-# decides a design question, and a value typed by hand into an email is a value
-# nobody can check. It reports what it could not measure as clearly as what it
-# could, because a missing measurement is the useful half.
+# SAFE TO PIPE FROM A URL, and it says so rather than asking you to trust it:
+#
+#   * needs no root and asks for none
+#   * installs nothing and changes no configuration
+#   * writes exactly one file, the report, in the directory you run it from
+#   * compiles two small probes in a temporary directory and deletes it
+#   * reads the daemon's REST API on localhost; it does not write to it
+#
+# Source of truth: scripts/measure-hardware.sh in the aes67-srt repository, which
+# is private. This file is a mirror for running on an appliance that cannot clone
+# it, and the repository copy wins if they ever differ.
+#
+# Why a script rather than a set of instructions: every value here decides a design
+# question, and a value typed by hand into an email is a value nobody can check. It
+# reports what it could not measure as clearly as what it could, because a missing
+# measurement is the useful half.
 #
 # Deliberately NOT `set -e`: a missing tool should be reported, not abort the run.
 set -uo pipefail
@@ -411,5 +424,6 @@ cat <<'SUMMARY'
     useful as one that could: it says what is missing from the machine.
 SUMMARY
 
-printf '\nreport written to %s\n' "${REPORT}"
+printf '\nreport written to %s\n' "$(pwd)/${REPORT}"
+printf 'send the whole file back, including the sections that failed\n'
 
