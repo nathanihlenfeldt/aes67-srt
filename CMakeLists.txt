@@ -113,6 +113,7 @@ endif()
 # ---------------------------------------------------------------------------
 set(AES67_SRT_SOURCES
   src/app.cpp
+  src/audio/null_backend.cpp
   src/config.cpp
   src/log.cpp
   src/transport/link.cpp
