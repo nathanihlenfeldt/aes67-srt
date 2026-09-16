@@ -139,6 +139,8 @@ endif()
 # the binary runs.  Module directories appear in this list as their tickets land.
 # ---------------------------------------------------------------------------
 set(AES67_SRT_SOURCES
+  src/aes67/daemon_client.cpp
+  src/aes67/fake_daemon_client.cpp
   src/app.cpp
   src/audio/null_backend.cpp
   src/config.cpp
