@@ -5,6 +5,13 @@ pinned tag **`v1.5.7`** (released 2026-08-28, the latest at the time of writing)
 
 ## How to reproduce
 
+## Verified against two library versions
+
+Every claim here was checked against `v1.5.7` (the latest release at the time). CI runs against
+whatever the distribution ships, and on `ubuntu-24.04` that is **1.5.3** — the transport's loopback
+tests pass against both, which is the useful reassurance: the option names, the payload ceiling and
+the statistics this project depends on have not moved between those versions.
+
 ```
 gh api repos/Haivision/srt/releases/latest --jq .tag_name      # v1.5.7
 curl -fsS https://raw.githubusercontent.com/Haivision/srt/v1.5.7/srtcore/srt.h
