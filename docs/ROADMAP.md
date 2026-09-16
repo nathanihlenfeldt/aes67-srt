@@ -46,6 +46,13 @@ fit" into "fits, at a quality cost the operator chose".
 | Opus | 128 kbit/s | 8.2 Mbit/s | ~9× less |
 | Opus | 64 kbit/s | 4 Mbit/s | ~18× less |
 
+**But bandwidth may not be what sets the limit.** Measuring Opus on the first available machine put
+encoding 64 channels at **~39% of a fast desktop core** (`docs/research/opus.md`). A Pi is several
+times slower at that work, so phase 2 may be **CPU-bound rather than bandwidth-bound**, in which case
+the table above describes a promise this appliance cannot keep at 64 channels. The measurement that
+decides it is in `scripts/measure-hardware.sh` (section 7) and should be taken before any phase 2
+work is planned, because the answer changes what phase 2 *is*.
+
 **Latency cost is real and must be counted against the A/V budget.** An Opus encoder adds the frame
 duration **plus its algorithmic delay** to the transport floor: at 48 kHz that is **frame + 4 ms**,
 so **~24 ms** with 20 ms frames, ~14 ms at 10 ms, ~9 ms at 5 ms (`docs/research/opus.md`, which

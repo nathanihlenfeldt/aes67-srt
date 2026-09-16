@@ -47,8 +47,8 @@ choosing a speech-optimised mode for programme audio. **Recommendation: FEC off.
 or 48000 (`opus.h:201-202`). We need 48000, which needs no input resampling and is the rate the
 codec's own delay accounting is written against (`src/opus_encoder.c:311-313`).
 
-**5. The delay figure is 4 ms from the encoder, plus the frame duration — and it should be queried,
-not hard-coded.** `src/opus_encoder.c:311-313`:
+**5. The delay is frame + 6.5 ms, and measuring it was the only way to know.** `src/opus_encoder.c:311-313`
+sets an internal delay compensation of 4 ms:
 
 ```c
     /* Delay compensation of 4 ms (2.5 ms for SILK's extra look-ahead
@@ -56,20 +56,28 @@ not hard-coded.** `src/opus_encoder.c:311-313`:
     st->delay_compensation = st->Fs/250;
 ```
 
-At 48 kHz that is 192 samples. So the algorithmic delay is **frame duration + 4 ms**: 24 ms at 20 ms
-frames, 14 ms at 10 ms, 9 ms at 5 ms. The API's own advice is explicit — "Applications needing delay
-compensation should call this CTL rather than hard-coding a value"
-(`opus_defines.h:500-502`, `OPUS_GET_LOOKAHEAD`).
+At 48 kHz that is 192 samples, which implies 24 ms for a 20 ms frame. **The API disagrees.**
+`OPUS_GET_LOOKAHEAD` returns **312 samples = 6.50 ms at 48 kHz** — measured, not read, by
+`scripts/measure-hardware.sh` on the first machine it ran on. The total algorithmic delay is
+therefore **frame + 6.5 ms**: **26.5 ms** at 20 ms frames, exactly the folklore figure this document
+had started to doubt.
 
-**One discrepancy to settle by measurement.** The widely quoted figure is 26.5 ms for 20 ms frames,
-which implies a 6.5 ms lookahead, not 4 ms. The code says 4 ms and names its components; the folklore
-says 6.5. Neither this document nor a blog post should settle it: **call `OPUS_GET_LOOKAHEAD` on real
-hardware** and record what it returns. That is one line in the measurement runbook.
+The internal constant and the reported lookahead are measuring different things, and the reported one
+is the one an application must compensate for. Which is what the API says in as many words
+(`opus_defines.h:500-502`):
+
+> Applications needing delay compensation should call this CTL rather than hard-coding a value.
+
+**This is the clearest case in the project so far of reading being insufficient.** The source
+comment, the header documentation and the measurement pointed at three different numbers, and only
+the third is usable. The A/V delay line must subtract **frame + 6.5 ms**, and the codec's share
+should be shown to the operator rather than inherited silently.
 
 **6. The default bitrate is not what anyone would choose.** `st->bitrate_bps = 3000+Fs*channels`
 (`src/opus_encoder.c:296`): at 48 kHz that is ~99 kbit/s for a stereo pair, i.e. ~396 kbit/s for an
 8-channel block of four coupled streams, unless it is set explicitly. Per-channel targets from the
-roadmap are what should be configured, and `OPUS_SET_BITRATE` is the control.
+roadmap are what should be configured, and `OPUS_SET_BITRATE` is the control. Measured with 128 kbit/s
+per channel configured, the encoder achieved 129 kbit/s per channel and 8.27 Mbit/s for all 64.
 
 **7. The frame format needs no change, which was the point.** `PayloadType::opus = 2` is already
 reserved in the wire format (`src/wire/frame.hpp`) with a codec seam behind it, and a PCM-only build
@@ -99,6 +107,30 @@ outside the code:
 Opus has none of this: it is royalty-free by design, and its `COPYING` is a permissive BSD-style
 licence from Xiph, Skype and others. That is the strongest argument for Opus being the default rather
 than the alternative.
+
+## The CPU finding that could stop phase 2
+
+The harness also measures encoding and decoding, and on the first machine it ran it produced this
+(an Apple-silicon MacBook Air, **not** the target Pi):
+
+```
+lookahead        : 312 samples = 6.50 ms at 48 kHz
+encode           : 3883 ms = 2.6x realtime, 38.83% of one core (0.607% per channel)
+decode           : 890 ms  = 11.2x realtime, 8.90% of one core
+achieved bitrate : 8.27 Mbit/s total (129292 bit/s per channel)
+```
+
+**Encoding 64 channels of Opus costs about 39% of a fast desktop core.** A Pi's core is several times
+slower at this work, so it is entirely possible that **64 channels of Opus do not fit** on the
+appliance this project is specified for. That would mean phase 2's density is limited by CPU rather
+than by the link, and the roadmap's implicit promise — "64 channels at 8 Mbit/s" — would need a
+CPU-aware version of itself: fewer encoded channels, a faster appliance class, or per-block
+encoding of only the channels that need it (which the per-block payload type makes possible).
+
+Nothing is decided by one machine's numbers, and a MacBook is not a Pi. But the direction of the
+result is a warning, and it promotes one measurement above the rest: **encode CPU per channel on the
+target hardware**, in `scripts/measure-hardware.sh`, section 7. If it fits, phase 2 is a bandwidth
+story as the roadmap assumes. If it does not, phase 2 is a different product.
 
 ## Unresolved: what only hardware can answer
 

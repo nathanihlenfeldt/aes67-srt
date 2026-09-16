@@ -42,7 +42,13 @@ try "model" sh -c 'cat /proc/device-tree/model 2>/dev/null | tr -d "\\0"; echo'
 if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
   try "cpu governor" cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
 fi
-try "cpu count" nproc
+if have nproc; then
+  try "cpu count" nproc
+else
+  # nproc is GNU coreutils; macOS does not have it, and a report that says
+  # "command not found" where a core count belongs is worse than one that adapts.
+  try "cpu count" getconf _NPROCESSORS_ONLN
+fi
 
 # ---------------------------------------------------------------------------
 section "2. Library versions (which libsrt, which libopus)"
@@ -238,4 +244,172 @@ int main(void) {
       }
     }
     encode_ms = now_ms() - start;
+
+    /* The same packet repeatedly: a cost measurement rather than a correctness
+       one, so the payload length is simply the last one encoded. */
+    start = now_ms();
+    for (f = 0; f < FRAMES; ++f) {
+      for (b = 0; b < BLOCKS; ++b) {
+        int samples = opus_multistream_decode_float(decoders[b], packet,
+                                                   last_bytes, output, FRAME, 0);
+        if (samples < 0) {
+          fprintf(stderr, "decode: %s\n", opus_strerror(samples));
+          return 1;
+        }
+      }
+    }
+    decode_ms = now_ms() - start;
+
+    printf("audio measured   : %.1f s of %d channels\n", audio_ms / 1000.0,
+           CHANNELS);
+    printf("encode           : %.0f ms = %.1fx realtime, %.2f%% of one core "
+           "(%.3f%% per channel)\n",
+           encode_ms, audio_ms / encode_ms, 100.0 * encode_ms / audio_ms,
+           100.0 * encode_ms / audio_ms / CHANNELS);
+    printf("decode           : %.0f ms = %.1fx realtime, %.2f%% of one core\n",
+           decode_ms, audio_ms / decode_ms, 100.0 * decode_ms / audio_ms);
+    printf("achieved bitrate : %.2f Mbit/s total (%.0f bit/s per channel)\n",
+           (double)payload_bytes * 8.0 / (audio_ms / 1000.0) / 1e6,
+           (double)payload_bytes * 8.0 / (audio_ms / 1000.0) / CHANNELS);
+    free(input);
+    free(output);
+  }
+  return 0;
+}
+PROBE
+  printf '\n--- compiling the Opus probe\n'
+  if cc -O2 -o "${workdir}/opus_probe" "${workdir}/opus_probe.c" \
+       $(pkg-config --cflags --libs opus) 2> "${workdir}/cc.log"; then
+    try "running the Opus probe" "${workdir}/opus_probe"
+  else
+    note "could not compile the probe; the compiler said:"
+    sed 's/^/    /' "${workdir}/cc.log"
+  fi
+  rm -rf "${workdir}"
+else
+  note "cc or libopus not present: install libopus-dev (apt) or opus (brew)"
+fi
+
+# ---------------------------------------------------------------------------
+section "8. Resampling CPU (ticket 03: the alternative to slipping samples)"
+# ---------------------------------------------------------------------------
+# The clock module must reconcile two clock domains. One candidate is continuous
+# asynchronous sample rate conversion, and its cost is the number that decides
+# between the approaches. libsamplerate is one implementation and SRC_SINC_FASTEST
+# its cheapest sinc, so read this as a fair-shape measurement rather than a
+# universal answer: a heavier converter costs more, a lighter one less.
+if have cc && have pkg-config && pkg-config --exists samplerate; then
+  workdir="$(mktemp -d)"
+  cat > "${workdir}/asrc_probe.c" <<'PROBE'
+#include <samplerate.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#define CHANNELS 64
+#define FRAME 480               /* 10 ms at 48 kHz */
+#define FRAMES 1000             /* ten seconds of audio */
+
+static double now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+int main(void) {
+  int error = 0;
+  int f;
+  float *input = malloc(sizeof(float) * FRAME * CHANNELS);
+  float *output = malloc(sizeof(float) * (FRAME + 64) * CHANNELS);
+  SRC_STATE *state = src_new(SRC_SINC_FASTEST, CHANNELS, &error);
+  const double audio_ms = (double)FRAMES * FRAME / 48.0;
+  double start, elapsed_ms;
+  SRC_DATA data;
+
+  if (state == NULL) {
+    fprintf(stderr, "src_new: %s\n", src_strerror(error));
+    return 1;
+  }
+  if (input == NULL || output == NULL) {
+    fprintf(stderr, "out of memory\n");
+    return 1;
+  }
+  for (f = 0; f < FRAME * CHANNELS; ++f) {
+    input[f] = 0.01f * (float)((f % 97) - 48);
+  }
+
+  memset(&data, 0, sizeof(data));
+  data.data_in = input;
+  data.data_out = output;
+  data.input_frames = FRAME;
+  data.output_frames = FRAME + 64;
+  /* 10 ppm: the receiver's clock runs slightly fast, so it has to consume
+     slightly more samples than arrive. This is the correction the clock module
+     would make continuously, and the reason the ratio is not exactly 1. */
+  data.src_ratio = 1.0 + 10e-6;
+  data.end_of_input = 0;
+
+  start = now_ms();
+  for (f = 0; f < FRAMES; ++f) {
+    if (src_process(state, &data) != 0) {
+      fprintf(stderr, "src_process: %s\n", src_strerror(error));
+      return 1;
+    }
+  }
+  elapsed_ms = now_ms() - start;
+
+  printf("converter        : libsamplerate SRC_SINC_FASTEST, %d channels\n",
+         CHANNELS);
+  printf("ratio            : 1 + 10 ppm\n");
+  printf("audio measured   : %.1f s of %d channels\n", audio_ms / 1000.0,
+         CHANNELS);
+  printf("resample         : %.0f ms = %.1fx realtime, %.2f%% of one core "
+         "(%.3f%% per channel)\n",
+         elapsed_ms, audio_ms / elapsed_ms, 100.0 * elapsed_ms / audio_ms,
+         100.0 * elapsed_ms / audio_ms / CHANNELS);
+
+  src_delete(state);
+  free(input);
+  free(output);
+  return 0;
+}
+PROBE
+  printf '\n--- compiling the resampler probe\n'
+  if cc -O2 -o "${workdir}/asrc_probe" "${workdir}/asrc_probe.c" \
+       $(pkg-config --cflags --libs samplerate) -lm 2> "${workdir}/cc.log"; then
+    try "running the resampler probe" "${workdir}/asrc_probe"
+  else
+    note "could not compile the probe; the compiler said:"
+    sed 's/^/    /' "${workdir}/cc.log"
+  fi
+  rm -rf "${workdir}"
+else
+  note "cc or libsamplerate not present."
+  note "install it for the clock decision: apt install libsamplerate0-dev"
+  note "(or build https://github.com/libsndfile/libsamplerate)"
+fi
+
+# ---------------------------------------------------------------------------
+section "9. What each measurement above answers"
+# ---------------------------------------------------------------------------
+cat <<'SUMMARY'
+    1  The machine        cpu budget everything else is measured against
+    2  Library versions   which libsrt and which libopus are really installed
+    3  Our build          the loopback tests passing on real hardware
+    4  ALSA / RAVENNA     does the device take 64ch S24_3LE at 48 kHz
+                          (the audio module, ticket 08)
+    5  aes67-daemon       the black box's real surface and its PTP state
+                          (the daemon questions, ticket 03)
+    6  Encryption CPU     whether a passphrase link is affordable at 148 Mbit/s
+                          (ticket 07)
+    7  Opus               the encoder's lookahead, and whether 64 channels fit
+                          at 128 kbit/s each (ticket 04)
+    8  Resampling CPU     the clock module's deciding number (ticket 03)
+
+    Send the whole report file back. A measurement that could not be taken is as
+    useful as one that could: it says what is missing from the machine.
+SUMMARY
+
+printf '\nreport written to %s\n' "${REPORT}"
 
