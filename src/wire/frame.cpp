@@ -127,6 +127,152 @@ size_t encoded_size(const Frame& frame) {
   return size;
 }
 
+LengthStatus frame_length(const uint8_t* data, size_t size, size_t* total,
+                          std::string* error) {
+  if (data == nullptr || total == nullptr) {
+    fail(error, "no frame to measure");
+    return LengthStatus::invalid;
+  }
+
+  // Identify before measuring: waiting for more bytes of something that is not
+  // ours would hang the transport on a misconfigured port.
+  if (size < 4) {
+    return LengthStatus::incomplete;
+  }
+  if (read_u32(data) != k_magic) {
+    fail(error, "magic: not an aes67-srt frame (expected \"A67S\")");
+    return LengthStatus::invalid;
+  }
+  if (size < k_frame_header_bytes) {
+    return LengthStatus::incomplete;
+  }
+  const uint16_t version = read_u16(data + 4);
+  if (version != k_version) {
+    fail(error, "version: expected " + count(k_version) + ", got " +
+                    count(version) + " - this build cannot read that format");
+    return LengthStatus::invalid;
+  }
+  const uint8_t block_count = data[10];
+  if (block_count == 0 || block_count > k_max_blocks) {
+    fail(error, "block_count: expected 1.." + count(k_max_blocks) + ", got " +
+                    count(block_count));
+    return LengthStatus::invalid;
+  }
+
+  // Walk the block headers. Each one states the length of the payload after it,
+  // so the total is known as soon as the last header has arrived — which is
+  // usually well before the last byte of payload does, and is the whole point of
+  // asking the header rather than waiting for the sender to finish.
+  size_t offset = k_frame_header_bytes;
+  for (uint8_t position = 0; position < block_count; ++position) {
+    if (size < offset + k_block_header_bytes) {
+      return LengthStatus::incomplete;
+    }
+    const uint32_t bytes = read_u32(data + offset + 4);
+    offset += k_block_header_bytes + static_cast<size_t>(bytes);
+    if (offset > k_max_frame_bytes) {
+      fail(error, "frame: length exceeds the " + count(k_max_frame_bytes) +
+                      "-byte sanity ceiling - the stream is not ours");
+      return LengthStatus::invalid;
+    }
+  }
+
+  *total = offset + k_checksum_bytes;
+  if (*total > k_max_frame_bytes) {
+    fail(error, "frame: length exceeds the " + count(k_max_frame_bytes) +
+                    "-byte sanity ceiling - the stream is not ours");
+    return LengthStatus::invalid;
+  }
+  return LengthStatus::known;
+}
+
+bool next_fragment(const uint8_t* frame, size_t size, size_t* offset,
+                   const uint8_t** chunk, size_t* chunk_size) {
+  if (frame == nullptr || offset == nullptr || chunk == nullptr ||
+      chunk_size == nullptr) {
+    return false;
+  }
+  if (*offset >= size) {
+    return false;
+  }
+  const size_t remaining = size - *offset;
+  const size_t take =
+      remaining < k_max_message_bytes ? remaining : k_max_message_bytes;
+  *chunk = frame + *offset;
+  *chunk_size = take;
+  *offset += take;
+  // The last fragment is often well under the maximum, which is correct: a
+  // message boundary is not a frame boundary.
+  return true;
+}
+
+bool Reassembler::feed(const uint8_t* data, size_t size, std::string* error) {
+  if (data == nullptr || size == 0) {
+    return true;  // nothing to do is not a failure
+  }
+  buffer_.insert(buffer_.end(), data, data + size);
+
+  if (expected_ == 0) {
+    size_t total = 0;
+    switch (frame_length(buffer_.data(), buffer_.size(), &total, error)) {
+      case LengthStatus::known:
+        expected_ = total;
+        break;
+      case LengthStatus::incomplete:
+        return true;
+      case LengthStatus::invalid:
+        // Not our stream: give up on the buffer rather than carry a desync
+        // forward into every later frame.
+        buffer_.clear();
+        return false;
+    }
+  }
+
+  if (buffer_.size() > expected_) {
+    // More than one frame, or a frame plus the start of the next. That is not an
+    // error: take_frame extracts exactly one frame and re-reads the remainder. A
+    // message that crosses a boundary costs nothing to tolerate, and being strict
+    // here would only make a future sender change look like corruption.
+    return true;
+  }
+  return true;
+}
+
+bool Reassembler::frame_ready() const {
+  return expected_ != 0 && buffer_.size() >= expected_;
+}
+
+size_t Reassembler::frame_size() const {
+  return frame_ready() ? expected_ : 0;
+}
+
+size_t Reassembler::buffered() const {
+  return buffer_.size();
+}
+
+bool Reassembler::take_frame(std::vector<uint8_t>* frame, std::string* error) {
+  if (frame == nullptr) {
+    return fail(error, "no frame to fill");
+  }
+  if (!frame_ready()) {
+    return fail(error, "no complete frame is waiting");
+  }
+  frame->assign(buffer_.begin(), buffer_.begin() + static_cast<long>(expected_));
+  buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<long>(expected_));
+  expected_ = 0;
+
+  // Anything already buffered belongs to the next frame, so let it decide its own
+  // length now rather than on the next feed.
+  if (!buffer_.empty()) {
+    size_t total = 0;
+    if (frame_length(buffer_.data(), buffer_.size(), &total, error) ==
+        LengthStatus::known) {
+      expected_ = total;
+    }
+  }
+  return true;
+}
+
 bool encode(const Frame& frame, std::vector<uint8_t>* out, std::string* error) {
   if (out == nullptr) {
     return fail(error, "no output buffer");

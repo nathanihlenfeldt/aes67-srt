@@ -28,6 +28,19 @@ namespace aes67_srt::wire {
 constexpr uint32_t k_magic = 0x41363753;
 constexpr uint16_t k_version = 1;
 
+/**
+ * A sanity ceiling on a frame's length, for reassembly rather than for the
+ * format.
+ *
+ * A reassembler learns a frame's length from its own header and waits for that
+ * many bytes, so a desynchronised stream carrying a plausible-looking magic and
+ * a corrupted length field would otherwise have us buffering until the machine
+ * dies. 256 KB is far above any real frame — a full 64-channel L24 frame is
+ * 9312 bytes, and even a full second of 64-channel audio is ~74 KB — so anything
+ * larger means the stream is not ours and reassembly should give up.
+ */
+constexpr size_t k_max_frame_bytes = 256 * 1024;
+
 /** Eight, because AES67 allows no more than eight channels per stream. */
 constexpr uint8_t k_max_blocks = 8;
 constexpr uint8_t k_block_channels = 8;
@@ -89,6 +102,84 @@ uint32_t checksum(const uint8_t* data, size_t size);
 
 /** The exact byte count encode() will produce for this frame's blocks. */
 size_t encoded_size(const Frame& frame);
+
+/**
+ * How long the frame at |data| is, reading only its header.
+ *
+ * A frame arrives across several SRT messages, because live mode caps a single
+ * send at 1456 bytes and a full 64-channel frame is 9312
+ * (docs/research/libsrt.md). A reassembler therefore has to know how much it is
+ * waiting for, and it must be able to say so from a *prefix* — there is always a
+ * moment when a message boundary lands mid-header.
+ *
+ * The knowledge belongs here rather than in the transport, because "how long is
+ * a frame" is a property of the format.
+ */
+enum class LengthStatus {
+  /**
+   * The length is now known: |total| holds it. Note this is *not* "the whole
+   * frame has arrived" — the length becomes knowable as soon as the last block
+   * header is readable, which is usually several payloads earlier. Whether the
+   * bytes are all present is the reassembler's question, not this one's.
+   */
+  known,
+  /** Not enough bytes yet to say. Wait for more; this is not an error. */
+  incomplete,
+  /** Not one of our frames, or a version we cannot read. Do not wait for more. */
+  invalid
+};
+
+LengthStatus frame_length(const uint8_t* data, size_t size, size_t* total,
+                          std::string* error);
+
+/**
+ * The largest message an SRT live-mode send will carry.
+ *
+ * Live mode caps a single send at `SRTO_PAYLOADSIZE`, which "can't be larger than
+ * 1456 bytes (1316 default)" (Haivision SRT v1.5.7,
+ * `docs/API/API-functions.md:1926`). See docs/research/libsrt.md.
+ */
+constexpr size_t k_max_message_bytes = 1456;
+
+/**
+ * Slice a frame into messages of at most k_max_message_bytes, without allocating.
+ *
+ * Start with `*offset = 0` and call until it returns false. The slices are views
+ * into the caller's buffer: at a thousand frames a second, seven fresh vectors
+ * per frame is churn for nothing.
+ */
+bool next_fragment(const uint8_t* frame, size_t size, size_t* offset,
+                   const uint8_t** chunk, size_t* chunk_size);
+
+/**
+ * Reassembles frames from the messages an SRT receive returns.
+ *
+ * A frame arrives across several messages, and the boundaries fall wherever they
+ * fall — mid-header, mid-payload. This owns that accumulation, and it is
+ * deliberately free of I/O so it can be tested without a socket: the transport
+ * moves bytes, this knows what the bytes mean.
+ */
+class Reassembler {
+ public:
+  /** Add one received message. Returns false on a stream that is not ours. */
+  bool feed(const uint8_t* data, size_t size, std::string* error);
+
+  /** True when a whole frame is waiting to be taken. */
+  bool frame_ready() const;
+
+  /** Bytes of the waiting frame, or 0. */
+  size_t frame_size() const;
+
+  /** Copy out the waiting frame and reset for the next. */
+  bool take_frame(std::vector<uint8_t>* frame, std::string* error);
+
+  /** Bytes buffered so far, waiting for the rest of a frame. */
+  size_t buffered() const;
+
+ private:
+  std::vector<uint8_t> buffer_;
+  size_t expected_ = 0;  // 0 until the header has told us how long this frame is
+};
 
 /**
  * Serialise |frame| into |out|, header first and checksum last.

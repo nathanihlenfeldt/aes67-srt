@@ -265,3 +265,241 @@ TEST_CASE(wire_refuses_a_frame_it_cannot_encode_and_writes_nothing) {
   CHECK_EQ(out.size(), static_cast<size_t>(3));
   CHECK_EQ(out[0], static_cast<uint8_t>(0xaa));
 }
+
+// ---------------------------------------------------------------------------
+// frame_length: what a reassembler needs, because a frame arrives across several
+// SRT messages and a message boundary can land anywhere.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using aes67_srt::wire::LengthStatus;
+
+LengthStatus length_of(const std::vector<uint8_t>& bytes, size_t length,
+                       size_t* total) {
+  std::string error;
+  return aes67_srt::wire::frame_length(bytes.data(), length, total, &error);
+}
+
+/** A prefix must ask for more bytes, never report a failure. */
+void check_incomplete(const std::vector<uint8_t>& bytes, size_t length) {
+  size_t total = 0;
+  if (length_of(bytes, length, &total) != LengthStatus::incomplete) {
+    test::report_failure("prefix should be incomplete", __FILE__, __LINE__,
+                         "length " + std::to_string(length));
+  }
+}
+
+}  // namespace
+
+TEST_CASE(wire_measures_a_frame_from_its_header_alone) {
+  const std::vector<uint8_t> bytes =
+      encoded(make_frame(8, PayloadType::pcm_l24, 0));
+  size_t total = 0;
+  CHECK(length_of(bytes, bytes.size(), &total) == LengthStatus::known);
+  CHECK_EQ(total, static_cast<size_t>(9312));
+
+  const std::vector<uint8_t> single =
+      encoded(make_frame(1, PayloadType::pcm_l16, 0));
+  CHECK(length_of(single, single.size(), &total) == LengthStatus::known);
+  CHECK_EQ(total, static_cast<size_t>(808));
+}
+
+TEST_CASE(wire_knows_a_frame_length_before_all_of_it_has_arrived) {
+  // Two L24 blocks: 28 header + (8 + 1152) + (8 + 1152) + 4 checksum.
+  const std::vector<uint8_t> bytes =
+      encoded(make_frame(2, PayloadType::pcm_l24, 0));
+  const size_t last_block_header_ends = 28 + (8 + 1152) + 8;
+
+  // Before the last block header is readable, the length cannot be known.
+  for (size_t length = 1; length < last_block_header_ends; ++length) {
+    check_incomplete(bytes, length);
+  }
+
+  // From that byte onwards the length is known, even though most of the frame is
+  // still in flight. This is what lets the transport know how much it is waiting
+  // for instead of buffering blind until a message happens to arrive.
+  size_t total = 0;
+  CHECK(length_of(bytes, last_block_header_ends, &total) == LengthStatus::known);
+  CHECK_EQ(total, bytes.size());
+  CHECK(total > last_block_header_ends);  // i.e. the payloads are still to come
+
+  // Knowing the length is not the same as having the frame. The reassembler
+  // answers the second question, and it says no until the last byte lands.
+  aes67_srt::wire::Reassembler reassembler;
+  std::string error;
+  CHECK(reassembler.feed(bytes.data(), last_block_header_ends, &error));
+  CHECK(!reassembler.frame_ready());
+  CHECK_EQ(reassembler.buffered(), last_block_header_ends);
+}
+
+TEST_CASE(wire_never_measures_a_prefix_shorter_than_a_header) {
+  const std::vector<uint8_t> bytes =
+      encoded(make_frame(1, PayloadType::pcm_l24, 0));
+  // One byte short of a block header is the interesting case: the length of the
+  // payload that follows is not readable yet.
+  check_incomplete(bytes, aes67_srt::wire::k_frame_header_bytes + 7);
+  check_incomplete(bytes, aes67_srt::wire::k_frame_header_bytes + 1);
+  check_incomplete(bytes, aes67_srt::wire::k_frame_header_bytes);
+  check_incomplete(bytes, 5);
+  check_incomplete(bytes, 3);
+  check_incomplete(bytes, 1);
+}
+
+TEST_CASE(wire_refuses_to_measure_a_stream_that_is_not_ours) {
+  size_t total = 0;
+  std::vector<uint8_t> bytes = encoded(make_frame(1, PayloadType::pcm_l24, 0));
+
+  std::vector<uint8_t> alien = bytes;
+  alien[0] = 'X';
+  CHECK(length_of(alien, alien.size(), &total) == LengthStatus::invalid);
+
+  std::vector<uint8_t> future = bytes;
+  future[5] = 9;  // a version this build cannot read
+  CHECK(length_of(future, future.size(), &total) == LengthStatus::invalid);
+
+  std::vector<uint8_t> no_blocks = bytes;
+  no_blocks[10] = 0;
+  CHECK(length_of(no_blocks, no_blocks.size(), &total) == LengthStatus::invalid);
+
+  std::vector<uint8_t> too_many_blocks = bytes;
+  too_many_blocks[10] = 9;
+  CHECK(length_of(too_many_blocks, too_many_blocks.size(), &total) ==
+        LengthStatus::invalid);
+}
+
+TEST_CASE(wire_gives_up_on_an_absurd_length_rather_than_buffering_forever) {
+  // A corrupted payload length on a stream that has plausible framing would
+  // otherwise have the reassembler waiting for gigabytes that will never come.
+  std::vector<uint8_t> bytes = encoded(make_frame(1, PayloadType::pcm_l24, 0));
+  const size_t length_field =
+      aes67_srt::wire::k_frame_header_bytes + 4;  // the block's payload_bytes
+  bytes[length_field + 0] = 0x00;
+  bytes[length_field + 1] = 0xFF;
+  bytes[length_field + 2] = 0xFF;
+  bytes[length_field + 3] = 0xFF;
+
+  size_t total = 0;
+  std::string error;
+  CHECK(aes67_srt::wire::frame_length(bytes.data(), bytes.size(), &total, &error) ==
+        LengthStatus::invalid);
+  CHECK(contains(error, "sanity ceiling"));
+}
+
+// ---------------------------------------------------------------------------
+// Fragmenting and reassembling: a frame is bigger than an SRT message, so this
+// is where the two halves of that problem are proved — without a socket, which
+// is exactly why it lives here rather than in the transport.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Every message a frame is sent as. */
+std::vector<std::vector<uint8_t>> fragments_of(const std::vector<uint8_t>& frame) {
+  std::vector<std::vector<uint8_t>> messages;
+  size_t offset = 0;
+  const uint8_t* chunk = nullptr;
+  size_t chunk_size = 0;
+  while (aes67_srt::wire::next_fragment(frame.data(), frame.size(), &offset, &chunk,
+                                        &chunk_size)) {
+    messages.emplace_back(chunk, chunk + chunk_size);
+  }
+  return messages;
+}
+
+}  // namespace
+
+TEST_CASE(wire_slices_a_frame_into_messages_srt_will_accept) {
+  const std::vector<uint8_t> bytes =
+      encoded(make_frame(8, PayloadType::pcm_l24, 0));
+  const std::vector<std::vector<uint8_t>> messages = fragments_of(bytes);
+
+  CHECK_EQ(messages.size(), static_cast<size_t>(7));
+
+  size_t total = 0;
+  for (const std::vector<uint8_t>& message : messages) {
+    CHECK(message.size() > 0);
+    CHECK(message.size() <= aes67_srt::wire::k_max_message_bytes);
+    total += message.size();
+  }
+  CHECK_EQ(total, bytes.size());
+
+  // The slices are views, so joining them has to reproduce the frame exactly.
+  std::vector<uint8_t> joined;
+  for (const std::vector<uint8_t>& message : messages) {
+    joined.insert(joined.end(), message.begin(), message.end());
+  }
+  CHECK(joined == bytes);
+}
+
+TEST_CASE(wire_reassembles_every_fragmented_frame_byte_for_byte) {
+  for (size_t blocks = 1; blocks <= 8; ++blocks) {
+    const std::vector<uint8_t> bytes =
+        encoded(make_frame(blocks, PayloadType::pcm_l24, 48000 + blocks));
+    aes67_srt::wire::Reassembler reassembler;
+    std::string error;
+    for (const std::vector<uint8_t>& message : fragments_of(bytes)) {
+      CHECK(reassembler.feed(message.data(), message.size(), &error));
+    }
+    CHECK(reassembler.frame_ready());
+    CHECK_EQ(reassembler.frame_size(), bytes.size());
+
+    std::vector<uint8_t> taken;
+    CHECK(reassembler.take_frame(&taken, &error));
+    CHECK(taken == bytes);
+    CHECK(!reassembler.frame_ready());
+    CHECK_EQ(reassembler.buffered(), static_cast<size_t>(0));
+  }
+}
+
+TEST_CASE(wire_reassembly_waits_for_the_last_fragment) {
+  const std::vector<uint8_t> bytes =
+      encoded(make_frame(8, PayloadType::pcm_l24, 0));
+  const std::vector<std::vector<uint8_t>> messages = fragments_of(bytes);
+
+  aes67_srt::wire::Reassembler reassembler;
+  std::string error;
+  for (size_t index = 0; index + 1 < messages.size(); ++index) {
+    CHECK(reassembler.feed(messages[index].data(), messages[index].size(), &error));
+    // Most of the frame is buffered and none of it is usable: a partial frame is
+    // not a quiet frame, it is not a frame.
+    CHECK(!reassembler.frame_ready());
+    CHECK_EQ(reassembler.frame_size(), static_cast<size_t>(0));
+  }
+  CHECK(reassembler.feed(messages.back().data(), messages.back().size(), &error));
+  CHECK(reassembler.frame_ready());
+}
+
+TEST_CASE(wire_tolerates_two_frames_arriving_in_one_message) {
+  const std::vector<uint8_t> first =
+      encoded(make_frame(1, PayloadType::pcm_l16, 11));
+  const std::vector<uint8_t> second =
+      encoded(make_frame(1, PayloadType::pcm_l16, 22));
+  std::vector<uint8_t> both = first;
+  both.insert(both.end(), second.begin(), second.end());
+
+  aes67_srt::wire::Reassembler reassembler;
+  std::string error;
+  CHECK(reassembler.feed(both.data(), both.size(), &error));
+  CHECK(reassembler.frame_ready());
+
+  std::vector<uint8_t> taken;
+  CHECK(reassembler.take_frame(&taken, &error));
+  CHECK(taken == first);
+
+  // The surplus is not thrown away, and the next frame is already complete.
+  CHECK(reassembler.frame_ready());
+  CHECK(reassembler.take_frame(&taken, &error));
+  CHECK(taken == second);
+}
+
+TEST_CASE(wire_reassembly_gives_up_on_a_stream_that_is_not_ours) {
+  aes67_srt::wire::Reassembler reassembler;
+  std::string error;
+  const std::vector<uint8_t> garbage(200, 0x5a);
+  CHECK(!reassembler.feed(garbage.data(), garbage.size(), &error));
+  CHECK(contains(error, "magic"));
+  // The desync is dropped rather than carried into every later frame.
+  CHECK_EQ(reassembler.buffered(), static_cast<size_t>(0));
+  CHECK(!reassembler.frame_ready());
+}
