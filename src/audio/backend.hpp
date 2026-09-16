@@ -92,6 +92,19 @@ class AudioBackend {
  */
 std::unique_ptr<AudioBackend> create_audio_backend(const AudioConfig& config);
 
+/**
+ * The runtime format a configuration asks for.
+ *
+ * This is the one place `audio.format` and `AudioFormat::sample_bytes` are tied
+ * together, and they have to agree: the daemon's stream codec and the wire
+ * format's payload type are chosen from the configuration *string*, while the
+ * device and every frame-arithmetic path work in *bytes*. A disagreement
+ * between the two would appear as audio of the wrong width rather than as an
+ * error anywhere, which is the failure mode this project keeps designing
+ * against, so the mapping lives in one function that can be tested.
+ */
+AudioFormat audio_format_from(const AudioConfig& config);
+
 /** True when this build contains the ALSA/RAVENNA backend. */
 bool ravenna_backend_available();
 

@@ -145,6 +145,7 @@ set(AES67_SRT_SOURCES
   src/audio/backend.cpp
   src/audio/null_backend.cpp
   src/config.cpp
+  src/engine.cpp
   src/log.cpp
   src/transport/link.cpp
   src/util.cpp

@@ -122,6 +122,31 @@ TEST_CASE(audio_a_write_the_device_cannot_take_is_counted) {
   CHECK_EQ(backend.pending_bytes(), format.period_bytes());
 }
 
+TEST_CASE(audio_the_format_the_configuration_asks_for_becomes_the_runtime_format) {
+  // The one place the configuration's format *string* and the byte width the
+  // rest of the path works in are tied together. They have to agree: the
+  // daemon's stream codec and the frame's payload type are chosen from the
+  // string, while the device and every frame-arithmetic path work in bytes.
+  aes67_srt::AudioConfig config;  // s24_3le, 64 channels, 48 frames, 48 kHz
+  const AudioFormat l24 = aes67_srt::audio::audio_format_from(config);
+  CHECK_EQ(l24.sample_bytes, 3u);
+  CHECK_EQ(l24.channels, 64u);
+  CHECK_EQ(l24.period_frames, 48u);
+  CHECK_EQ(l24.sample_rate, 48000u);
+  CHECK_EQ(l24.period_bytes(), static_cast<size_t>(9216));
+
+  config.format = "s16_le";
+  const AudioFormat l16 = aes67_srt::audio::audio_format_from(config);
+  CHECK_EQ(l16.sample_bytes, 2u);
+  CHECK_EQ(l16.period_bytes(), static_cast<size_t>(6144));
+
+  // And the wire format agrees about what a sample costs, which is what makes
+  // the engine's choice of payload type safe: it picks the type from the byte
+  // width, so the two cannot drift apart without this failing.
+  CHECK_EQ(aes67_srt::wire::sample_bytes(PayloadType::pcm_l24), l24.sample_bytes);
+  CHECK_EQ(aes67_srt::wire::sample_bytes(PayloadType::pcm_l16), l16.sample_bytes);
+}
+
 TEST_CASE(audio_the_factory_refuses_a_backend_this_build_does_not_have) {
   // A typo in the configuration, and the reason names the string that was typed
   // rather than reporting a null pointer somewhere further along.

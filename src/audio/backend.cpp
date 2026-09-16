@@ -54,6 +54,24 @@ class UnavailableBackend : public AudioBackend {
 
 }  // namespace
 
+AudioFormat audio_format_from(const AudioConfig& config) {
+  AudioFormat format;
+  // A negative value in a configuration that reached here without being
+  // validated becomes zero rather than a huge unsigned: zero is something every
+  // backend already refuses with a reason, and a wrapped-around channel count is
+  // not.
+  const auto positive = [](int value) {
+    return value > 0 ? static_cast<unsigned>(value) : 0u;
+  };
+  format.sample_rate = positive(config.sample_rate);
+  format.channels = positive(config.channels);
+  format.period_frames = positive(config.period_frames);
+  // The configuration validator accepts only these two, and the payload of L24
+  // is three bytes per sample because AES67 packs 24 bits into three (ADR 0001).
+  format.sample_bytes = config.format == "s16_le" ? 2u : 3u;
+  return format;
+}
+
 bool ravenna_backend_available() {
 #if AES67_SRT_WITH_ALSA
   return true;
