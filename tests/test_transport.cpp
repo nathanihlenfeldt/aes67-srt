@@ -362,3 +362,131 @@ TEST_CASE(transport_carries_a_rendezvous_link) {
   first.close();
   second.close();
 }
+
+TEST_CASE(transport_takes_strain_as_delay_and_never_drops_audio) {
+  if (skip_without_srt("the starved-link test")) {
+    return;
+  }
+  const int listener_port = 19441;
+  const int caller_port = 19442;
+  const int frame_count = 20;
+
+  // Starve the link deliberately, and without root so it runs in CI on both
+  // platforms. The mechanism: a receive buffer far too small to hold what the
+  // flow-control window permits. The receiver overflows, SRT notices packets
+  // missing and retransmits into the space that frees up — the same recovery path
+  // a lossy WAN exercises.
+  aes67_srt::Config listener_config =
+      loopback_config("listener", listener_port, "");
+  listener_config.link.receive_buffer_bytes = 262144;
+  listener_config.link.flow_control_packets = 256;
+
+  aes67_srt::Config caller_config = loopback_config(
+      "caller", caller_port, "127.0.0.1:" + std::to_string(listener_port));
+  caller_config.link.receive_buffer_bytes = 262144;
+  caller_config.link.flow_control_packets = 256;
+
+  Link listener;
+  Link caller;
+  std::string listener_error;
+  std::atomic<bool> listener_up{false};
+  std::thread accepting([&] {
+    listener.set_receive_timeout_ms(100);
+    listener_up = listener.open(listener_config, &listener_error);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+  std::string caller_error;
+  const bool caller_connected = caller.open(caller_config, &caller_error);
+  accepting.join();
+
+  CHECK(listener_up.load());
+  CHECK(caller_connected);
+  if (!listener_up.load() || !caller_connected) {
+    test::report_failure("starved link did not come up", __FILE__, __LINE__,
+                         caller_error + " / " + listener_error);
+    return;
+  }
+
+  // The sender behaves like a real stream: forty frames, eight messages each, with
+  // no pause to see how the far end is coping.
+  const std::vector<uint8_t> frame = make_frame_bytes(8, 0x33);
+  std::thread sending([&] {
+    for (int index = 0; index < frame_count; ++index) {
+      std::string send_error;
+      if (!send_frame_as_messages(&caller, frame, &send_error)) {
+        test::report_failure("starved send", __FILE__, __LINE__,
+                             "frame " + std::to_string(index) + ": " + send_error);
+        return;
+      }
+    }
+  });
+
+  // The receiver drains deliberately slower than the sender fills, so the link has
+  // to hold what it cannot deliver yet.
+  std::vector<std::vector<uint8_t>> received;
+  aes67_srt::wire::Reassembler reassembler;
+  int peak_buffer_ms = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  while (received.size() < static_cast<size_t>(frame_count) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::vector<uint8_t> message;
+    bool timed_out = false;
+    std::string receive_error;
+    if (listener.receive_message(&message, &timed_out, &receive_error)) {
+      if (!reassembler.feed(message.data(), message.size(), &receive_error)) {
+        test::report_failure("starved reassembly", __FILE__, __LINE__,
+                             receive_error);
+        break;
+      }
+      while (reassembler.frame_ready()) {
+        std::vector<uint8_t> taken;
+        if (!reassembler.take_frame(&taken, &receive_error)) {
+          break;
+        }
+        received.push_back(std::move(taken));
+      }
+    } else if (!timed_out) {
+      test::report_failure("starved receive", __FILE__, __LINE__, receive_error);
+      break;
+    }
+
+    // Watch the delay while the strain is on. This is the measurement the ticket
+    // asks for, and why it is not a yes/no test.
+    LinkStats sampled;
+    std::string stats_error;
+    if (listener.stats(&sampled, &stats_error) &&
+        sampled.receive_buffer_ms > peak_buffer_ms) {
+      peak_buffer_ms = sampled.receive_buffer_ms;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  sending.join();
+
+  LinkStats stats;
+  std::string stats_error;
+  CHECK(listener.stats(&stats, &stats_error));
+
+  std::cout << "    starved link: " << received.size() << "/" << frame_count
+            << " frames, peak receive buffer " << peak_buffer_ms
+            << " ms, retransmitted " << stats.packets_retransmitted << ", dropped "
+            << stats.packets_dropped << std::endl;
+
+  // The promise: everything arrives, and nothing was thrown away.
+  CHECK_EQ(received.size(), static_cast<size_t>(frame_count));
+  for (const std::vector<uint8_t>& taken : received) {
+    CHECK(taken == frame);
+  }
+  CHECK_EQ(stats.packets_dropped, static_cast<int64_t>(0));
+
+  // And the strain has to have been real, or this test proved nothing: either
+  // packets were retransmitted or the buffer held a queue.
+  CHECK(stats.packets_retransmitted > 0 || peak_buffer_ms > 0);
+
+  // Deliberately NOT asserted, because it is not what this proves: this is
+  // backpressure and induced overflow on loopback, not packet loss across a WAN.
+  // The real thing belongs to tickets 09 and 10, on real links.
+
+  caller.close();
+  listener.close();
+}

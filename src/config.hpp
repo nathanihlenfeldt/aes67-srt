@@ -39,6 +39,20 @@ struct LinkConfig {
   int alarm_delay_ms = 500;
   std::string passphrase;
   int blocks = 8;
+  /**
+   * `SRTO_RCVBUF` in bytes, and `SRTO_FC` in packets. **Zero means "leave the
+   * library's default"**, which is what a site should use until the values have
+   * been tuned against a real link: SRT's own defaults are 8192 packets of
+   * receive buffer and a 25600-packet flow-control window, and what they should
+   * be at 148 Mbit/s over a lossy WAN is an open question in
+   * docs/research/libsrt.md.
+   *
+   * They exist as configuration because starving a link on purpose is the only
+   * way to prove the never-drop policy, and that has to be reachable without a
+   * rebuild.
+   */
+  int receive_buffer_bytes = 0;
+  int flow_control_packets = 0;
 };
 
 struct DaemonConfig {

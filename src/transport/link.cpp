@@ -191,6 +191,17 @@ bool Link::open(const Config& config, std::string* error) {
   if (mode == "rendezvous" && !set_bool(socket, SRTO_RENDEZVOUS, true)) {
     return refuse("SRTO_RENDEZVOUS", "");
   }
+  // Buffer tuning, when the configuration asks for it. Zero means "leave the
+  // library's default", which is the right answer until these have been tuned
+  // against a real link (docs/research/libsrt.md).
+  if (config.link.receive_buffer_bytes > 0 &&
+      !set_int(socket, SRTO_RCVBUF, config.link.receive_buffer_bytes)) {
+    return refuse("SRTO_RCVBUF", "");
+  }
+  if (config.link.flow_control_packets > 0 &&
+      !set_int(socket, SRTO_FC, config.link.flow_control_packets)) {
+    return refuse("SRTO_FC", "");
+  }
   if (!config.link.passphrase.empty()) {
     const int length = static_cast<int>(config.link.passphrase.size());
     if (srt_setsockopt(socket, 0, SRTO_PASSPHRASE, config.link.passphrase.data(),

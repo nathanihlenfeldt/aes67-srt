@@ -143,10 +143,11 @@ bool read_link(const json& document, LinkConfig* link, std::string* reason) {
   if (object == nullptr) {
     return true;
   }
-  if (!check_keys(*object,
-                  {"role", "mode", "peer", "local_port", "latency_ms",
-                   "alarm_delay_ms", "passphrase", "blocks"},
-                  "link.", reason)) {
+  if (!check_keys(
+          *object,
+          {"role", "mode", "peer", "local_port", "latency_ms", "alarm_delay_ms",
+           "passphrase", "blocks", "receive_buffer_bytes", "flow_control_packets"},
+          "link.", reason)) {
     return false;
   }
   const std::string path = "link.";
@@ -157,7 +158,11 @@ bool read_link(const json& document, LinkConfig* link, std::string* reason) {
          read_int(*object, "latency_ms", path, &link->latency_ms, reason) &&
          read_int(*object, "alarm_delay_ms", path, &link->alarm_delay_ms, reason) &&
          read_string(*object, "passphrase", path, &link->passphrase, reason) &&
-         read_int(*object, "blocks", path, &link->blocks, reason);
+         read_int(*object, "blocks", path, &link->blocks, reason) &&
+         read_int(*object, "receive_buffer_bytes", path,
+                  &link->receive_buffer_bytes, reason) &&
+         read_int(*object, "flow_control_packets", path,
+                  &link->flow_control_packets, reason);
 }
 
 bool read_blocks(const json& document, Config* config, std::string* reason) {
@@ -306,7 +311,9 @@ std::string Config::to_json() const {
                       {"latency_ms", link.latency_ms},
                       {"alarm_delay_ms", link.alarm_delay_ms},
                       {"passphrase", link.passphrase},
-                      {"blocks", link.blocks}};
+                      {"blocks", link.blocks},
+                      {"receive_buffer_bytes", link.receive_buffer_bytes},
+                      {"flow_control_packets", link.flow_control_packets}};
 
   document["aes67_daemon"] = {
       {"address", daemon.address}, {"port", daemon.port}, {"fake", daemon.fake}};
@@ -420,6 +427,22 @@ bool Config::validate(std::string* reason) const {
                             " blocks do not cover audio.channels " +
                             std::to_string(audio.channels) + "; expected " +
                             std::to_string(expected_blocks));
+  }
+  // Buffer tuning: zero means the library's default, which is what a site should
+  // run with until the values have been tuned against a real link.
+  if (link.receive_buffer_bytes != 0 &&
+      (link.receive_buffer_bytes < 1024 || link.receive_buffer_bytes > 268435456)) {
+    return fail(reason,
+                "link.receive_buffer_bytes: expected 0 (library default) or "
+                "1024..268435456, got " +
+                    std::to_string(link.receive_buffer_bytes));
+  }
+  if (link.flow_control_packets != 0 &&
+      (link.flow_control_packets < 2 || link.flow_control_packets > 1000000)) {
+    return fail(reason,
+                "link.flow_control_packets: expected 0 (library default) or "
+                "2..1000000, got " +
+                    std::to_string(link.flow_control_packets));
   }
 
   // --- daemon --------------------------------------------------------------
