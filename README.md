@@ -22,15 +22,22 @@ plan, the decisions and the open questions are in the specification, and the mea
   that cannot carry 74 Mbit/s of PCM.
 - **`docs/research/`** — what was verified against primary sources, with citations. Start with
   `libsrt.md`: it corrects an assumption the wire format's ADR was built on.
+- **`docs/runbooks/hardware-session.md`** — **where the project is blocked**: one session at the
+  hardware closes the measurements three tickets are waiting on. Run
+  `scripts/measure-hardware.sh` on the appliance and send the report back.
 - **`docs/agents/`** — how the engineering skills read this repository.
 - **`docs/adr/`** — decisions of record. `0001` is the wire format: our own frame in the SRT
-  stream rather than RTP-over-SRT. The rest arrive as decisions land.
+  stream rather than RTP-over-SRT. `0002` is the licence. The rest arrive as decisions land.
 - **`CONTEXT.md`** — the glossary, created lazily when terms actually land. Not written
   speculatively.
 
 The work is tracked as issues on
 [`nathanihlenfeldt/aes67-srt`](https://github.com/nathanihlenfeldt/aes67-srt/issues):
 the numbered chain is the build order, issues #2–#5 are the research, and #1 is the specification.
+
+**Next, in one line:** run `scripts/measure-hardware.sh` on the Pi (issue #18). The clock module's
+approach, phase 2's shape and whether 64 channels of audio fit at all all wait on numbers that only
+the appliance can produce — see the runbook for what each figure decides.
 
 ## Building
 
