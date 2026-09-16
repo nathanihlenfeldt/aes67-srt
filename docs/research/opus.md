@@ -108,10 +108,10 @@ Opus has none of this: it is royalty-free by design, and its `COPYING` is a perm
 licence from Xiph, Skype and others. That is the strongest argument for Opus being the default rather
 than the alternative.
 
-## The CPU finding that could stop phase 2
+## The CPU number, and how easily a single sample of it lies
 
-The harness also measures encoding and decoding, and on the first machine it ran it produced this
-(an Apple-silicon MacBook Air, **not** the target Pi):
+The harness measures encoding and decoding. The first run on an Apple-silicon MacBook Air (not the
+target Pi) reported:
 
 ```
 lookahead        : 312 samples = 6.50 ms at 48 kHz
@@ -120,17 +120,31 @@ decode           : 890 ms  = 11.2x realtime, 8.90% of one core
 achieved bitrate : 8.27 Mbit/s total (129292 bit/s per channel)
 ```
 
-**Encoding 64 channels of Opus costs about 39% of a fast desktop core.** A Pi's core is several times
-slower at this work, so it is entirely possible that **64 channels of Opus do not fit** on the
-appliance this project is specified for. That would mean phase 2's density is limited by CPU rather
-than by the link, and the roadmap's implicit promise — "64 channels at 8 Mbit/s" — would need a
-CPU-aware version of itself: fewer encoded channels, a faster appliance class, or per-block
-encoding of only the channels that need it (which the per-block payload type makes possible).
+**That 38.83% was wrong, and this document said so before it was corrected** — it was a single sample
+taken while the machine was busy with something else. Running the same probe three times and keeping
+the best (the run least interfered with) gives:
 
-Nothing is decided by one machine's numbers, and a MacBook is not a Pi. But the direction of the
-result is a warning, and it promotes one measurement above the rest: **encode CPU per channel on the
-target hardware**, in `scripts/measure-hardware.sh`, section 7. If it fits, phase 2 is a bandwidth
-story as the roadmap assumes. If it does not, phase 2 is a different product.
+```
+encode           : 1442 ms = 6.9x realtime, 14.42% of one core (0.225% per channel)  [best of 3]
+decode           : 382 ms  = 26.2x realtime, 3.82% of one core  [best of 3]
+achieved bitrate : 8.27 Mbit/s total (129164 bit/s per channel)
+```
+
+**A 2.7× swing on identical work, from machine load alone.** The harness now takes the best of three
+runs and reports the CPU governor, because under `ondemand` the numbers are lower and less
+repeatable still. Anyone measuring this on the Pi should set the governor to `performance` first —
+the script prints the command.
+
+**So what is true?** Encoding 64 channels of Opus costs **~14% of a fast desktop core**, decoding
+~4%. A Pi 5 core is perhaps three to five times slower at this work, which puts encoding somewhere
+between 40% and 70% of a core for 64 channels — tight on a four-core appliance that also has to
+carry the link, but not the impossibility an earlier version of this document implied. The honest
+position is that **the Pi number decides**, and it is the first thing section 7 should be read for.
+
+**The correction is the lesson.** This project has now been wrong three times by reading rather than
+measuring (the 1456-byte payload ceiling, the 4 ms lookahead, and this), and once by measuring too
+little. A CPU figure that will decide a product's channel count is not evidence until it is taken on
+the target with the governor fixed and taken more than once.
 
 ## Unresolved: what only hardware can answer
 

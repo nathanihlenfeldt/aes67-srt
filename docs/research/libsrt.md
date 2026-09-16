@@ -168,9 +168,13 @@ reported delay increases, and (c) `pktRcvDrop` stays at zero.
   the Key Encrypting Key (KEK)" (`docs/features/encryption.md:95,97`). Key derivation is PBKDF2
   (`docs/features/encryption.md:91`); rotation is governed by `SRTO_KMREFRESHRATE` and
   `SRTO_KMPREANNOUNCE` (`srtcore/srt.h:224-225`).
-- **The CPU cost on a Pi is unmeasured.** AES-CTR is inexpensive per byte, but "inexpensive" is not
-  a number and 148 Mbit/s of it is not nothing. Ticket 07 measures it on the target hardware before
-  we enable encryption by default.
+- **The CPU cost is now measured — on a Pi 5, which is the machine that matters.** `openssl speed -evp
+  aes-128-ctr` reports **~3.2 GB/s** in 16 KB blocks and **~2.9 GB/s** in 1 KB blocks, i.e. the ARMv8
+  crypto extensions are in use (`OPENSSL_armcap=0xbd`). Our link needs 18.6 MB/s in one direction and
+  ~37 MB/s duplex, so **encryption costs about 1% of one core.** A passphrase link is affordable, and
+  it should not be made optional for performance reasons. Measured 2026-09-16 on a Raspberry Pi 5
+  Model B (kernel 6.18.34, governor `ondemand` — which does not matter here, since the cipher is
+  fast enough by a factor of eighty).
 
 ## Statistics for the UI
 

@@ -63,6 +63,17 @@ else
   try "cpu count" getconf _NPROCESSORS_ONLN
 fi
 
+# The CPU sections below are only comparable if the cores are running flat out.
+# This script will not change system configuration, so it warns instead.
+GOVERNOR_FILE=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+if [ -f "${GOVERNOR_FILE}" ] && [ "$(cat "${GOVERNOR_FILE}")" != "performance" ]; then
+  printf '\n--- WARNING: cpu governor is %s, not performance\n' "$(cat "${GOVERNOR_FILE}")"
+  note "Sections 6, 7 and 8 measure CPU, and under a power-saving governor the"
+  note "numbers come out lower and vary between runs. For figures worth comparing:"
+  note "  echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor"
+  note "and put it back afterwards with 'ondemand'."
+fi
+
 # ---------------------------------------------------------------------------
 section "2. Library versions (which libsrt, which libopus)"
 # ---------------------------------------------------------------------------
@@ -90,13 +101,13 @@ for header in /usr/include/srt/version.h /usr/local/include/srt/version.h \
   fi
 done
 
-printf '\n--- libopus header\n'
-for header in /usr/include/opus/opus.h /usr/local/include/opus/opus.h \
-              /opt/homebrew/include/opus/opus.h; do
-  if [ -f "${header}" ]; then
-    note "${header} present"
-  fi
-done
+printf '\n--- what is actually installed (in case pkg-config is not the whole story)\n'
+if have dpkg; then
+  dpkg -l 2>/dev/null | awk '/^ii/ && /srt|opus|samplerate|alsa/ {printf "    %s %s\n", $2, $3}'
+fi
+if have ldconfig; then
+  ldconfig -p 2>/dev/null | grep -E 'libsrt|libopus|libsamplerate' | sed 's/^/    /'
+fi
 
 # ---------------------------------------------------------------------------
 section "3. Our own build, if it is here (ticket 07's loopback on real hardware)"
@@ -124,6 +135,17 @@ else
   note "arecord not installed"
 fi
 
+# Say what a missing card *means*. The difference between "the daemon is not
+# installed" and "the hardware is broken" is the whole value of this section, and
+# a raw ALSA error states neither.
+if ! arecord -l 2>/dev/null | grep -qi ravenna; then
+  printf '\n--- no RAVENNA card\n'
+  note "Not an ALSA fault. It means the Merging RAVENNA kernel module and"
+  note "aes67-daemon are not installed or not loaded, so sections 4 and 5 cannot be"
+  note "measured until they are. Expected on a bare Pi; worth knowing before the"
+  note "measurement is scheduled rather than during it."
+fi
+
 # ---------------------------------------------------------------------------
 section "5. aes67-daemon (ticket 03: the black box's real surface)"
 # ---------------------------------------------------------------------------
@@ -143,6 +165,14 @@ fi
 
 printf '\n--- daemon binary\n'
 try "which" sh -c 'command -v aes67-daemon || echo "aes67-daemon not on PATH"'
+
+if ! curl -fsS --max-time 2 http://127.0.0.1:8080/api/config >/dev/null 2>&1; then
+  printf '\n--- the daemon is not answering\n'
+  note "Nothing is listening on 127.0.0.1:8080, so there is no surface to measure."
+  note "Worth checking 'systemctl status aes67-daemon' and 'command -v aes67-daemon'."
+  note "The sibling project aes67-sip installs the RAVENNA module and the daemon if"
+  note "a known-good provisioning path would help."
+fi
 
 # ---------------------------------------------------------------------------
 section "6. Encryption CPU at the link rate (ticket 07: is a passphrase affordable?)"
@@ -168,7 +198,15 @@ section "7. Opus on this machine (ticket 04: does 64 channels fit?)"
 # encoder with eight MONO streams - the correctness-first mapping in
 # docs/research/opus.md, because our channels are arbitrary console channels
 # rather than stereo pairs.
-if have cc && have pkg-config && pkg-config --exists opus; then
+# Name exactly what is missing rather than "cc or libopus". The first run of this
+# on a real Pi could not say which, and the remedy is different for each.
+opus_missing=""
+have cc || opus_missing="${opus_missing} a C compiler (apt install build-essential)"
+have pkg-config || opus_missing="${opus_missing} pkg-config"
+if [ -z "${opus_missing}" ] && ! pkg-config --exists opus; then
+  opus_missing=" libopus development files (apt install libopus-dev)"
+fi
+if [ -z "${opus_missing}" ]; then
   workdir="$(mktemp -d)"
   cat > "${workdir}/opus_probe.c" <<'PROBE'
 #include <opus_multistream.h>
@@ -243,20 +281,31 @@ int main(void) {
       input[f] = 0.01f * (float)((f % 97) - 48);
     }
 
-    start = now_ms();
-    for (f = 0; f < FRAMES; ++f) {
-      for (b = 0; b < BLOCKS; ++b) {
-        int bytes = opus_multistream_encode_float(encoders[b], input, FRAME,
-                                                  packet, sizeof(packet));
-        if (bytes < 0) {
-          fprintf(stderr, "encode: %s\n", opus_strerror(bytes));
-          return 1;
+    /* Three runs, best kept. A CPU measurement on a shared machine measures the
+       machine's mood as much as the codec: two runs of this probe on the same
+       laptop gave 39% and 15% of a core for identical work, a 2.6x swing. Since
+       this number decides whether phase 2 fits on a Pi at all, a single sample
+       would not be evidence. The minimum is the fairest figure - it is the run
+       least interfered with. The first run also warms the caches. */
+    double best_encode = 1e18;
+    double best_decode = 1e18;
+    int run;
+    for (run = 0; run < 3; ++run) {
+      start = now_ms();
+      for (f = 0; f < FRAMES; ++f) {
+        for (b = 0; b < BLOCKS; ++b) {
+          int bytes = opus_multistream_encode_float(
+              encoders[b], input, FRAME, packet, sizeof(packet));
+          if (bytes < 0) {
+            fprintf(stderr, "encode: %s\n", opus_strerror(bytes));
+            return 1;
+          }
+          last_bytes = bytes;
+          payload_bytes += bytes;
         }
-        last_bytes = bytes;
-        payload_bytes += bytes;
       }
-    }
-    encode_ms = now_ms() - start;
+      encode_ms = now_ms() - start;
+      if (encode_ms < best_encode) best_encode = encode_ms;
 
     /* The same packet repeatedly: a cost measurement rather than a correctness
        one, so the payload length is simply the last one encoded. */
@@ -271,19 +320,25 @@ int main(void) {
         }
       }
     }
-    decode_ms = now_ms() - start;
+      decode_ms = now_ms() - start;
+      if (decode_ms < best_decode) best_decode = decode_ms;
+    }
+    /* Best of three, for the reasons in the comment above. */
+    encode_ms = best_encode;
+    decode_ms = best_decode;
 
     printf("audio measured   : %.1f s of %d channels\n", audio_ms / 1000.0,
            CHANNELS);
     printf("encode           : %.0f ms = %.1fx realtime, %.2f%% of one core "
-           "(%.3f%% per channel)\n",
+           "(%.3f%% per channel)  [best of 3]\n",
            encode_ms, audio_ms / encode_ms, 100.0 * encode_ms / audio_ms,
            100.0 * encode_ms / audio_ms / CHANNELS);
-    printf("decode           : %.0f ms = %.1fx realtime, %.2f%% of one core\n",
+    printf("decode           : %.0f ms = %.1fx realtime, %.2f%% of one core  "
+           "[best of 3]\n",
            decode_ms, audio_ms / decode_ms, 100.0 * decode_ms / audio_ms);
     printf("achieved bitrate : %.2f Mbit/s total (%.0f bit/s per channel)\n",
-           (double)payload_bytes * 8.0 / (audio_ms / 1000.0) / 1e6,
-           (double)payload_bytes * 8.0 / (audio_ms / 1000.0) / CHANNELS);
+           (double)payload_bytes * 8.0 / (3.0 * audio_ms / 1000.0) / 1e6,
+           (double)payload_bytes * 8.0 / (3.0 * audio_ms / 1000.0) / CHANNELS);
     free(input);
     free(output);
   }
@@ -300,7 +355,7 @@ PROBE
   fi
   rm -rf "${workdir}"
 else
-  note "cc or libopus not present: install libopus-dev (apt) or opus (brew)"
+  note "cannot take this measurement - missing:${opus_missing}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -311,7 +366,13 @@ section "8. Resampling CPU (ticket 03: the alternative to slipping samples)"
 # between the approaches. libsamplerate is one implementation and SRC_SINC_FASTEST
 # its cheapest sinc, so read this as a fair-shape measurement rather than a
 # universal answer: a heavier converter costs more, a lighter one less.
-if have cc && have pkg-config && pkg-config --exists samplerate; then
+asrc_missing=""
+have cc || asrc_missing="${asrc_missing} a C compiler (apt install build-essential)"
+have pkg-config || asrc_missing="${asrc_missing} pkg-config"
+if [ -z "${asrc_missing}" ] && ! pkg-config --exists samplerate; then
+  asrc_missing=" libsamplerate development files (apt install libsamplerate0-dev)"
+fi
+if [ -z "${asrc_missing}" ]; then
   workdir="$(mktemp -d)"
   cat > "${workdir}/asrc_probe.c" <<'PROBE'
 #include <samplerate.h>
@@ -398,9 +459,8 @@ PROBE
   fi
   rm -rf "${workdir}"
 else
-  note "cc or libsamplerate not present."
-  note "install it for the clock decision: apt install libsamplerate0-dev"
-  note "(or build https://github.com/libsndfile/libsamplerate)"
+  note "cannot take this measurement - missing:${asrc_missing}"
+  note "this is the clock module's deciding number, so it is worth the install"
 fi
 
 # ---------------------------------------------------------------------------
