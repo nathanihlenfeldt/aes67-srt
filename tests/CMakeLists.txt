@@ -1,0 +1,17 @@
+# Unit tests.  They run on any platform: nothing here touches ALSA, libsrt or a
+# real daemon, and the modules that will are compiled in behind AUTO options.
+add_executable(aes67-srt-tests
+  test_main.cpp
+  test_config.cpp)
+
+target_link_libraries(aes67-srt-tests PRIVATE aes67-srt-core)
+target_compile_options(aes67-srt-tests PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+add_test(NAME aes67-srt-tests COMMAND aes67-srt-tests)
+
+# The binary can also be smoke tested from the command line, which is how CI
+# checks that a refusal exits non-zero and says why.
+add_test(NAME config-validate
+  COMMAND aes67-srt -c ${CMAKE_SOURCE_DIR}/config/aes67-srt.dev.conf --validate)
+set_tests_properties(config-validate PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

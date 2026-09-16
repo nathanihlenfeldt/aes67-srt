@@ -1,0 +1,50 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: build (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Only 24.04: it is the image that ships clang-format 18, which is what
+        # .clang-format targets, so the formatting gate is enforced here rather
+        # than skipped.  ubuntu-24.04-arm is deliberately absent while this
+        # repository is private: hosted ARM runners are not available to a
+        # private repository on every plan, and a job that cannot start is worse
+        # than a job that is not there.  Add it when the repository is public.
+        runner:
+          - ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo bash ./scripts/install-deps.sh
+
+      - name: Check - format, build, tests, config validation, refusals
+        env:
+          CLANG_FORMAT: clang-format-18
+        run: ./scripts/check.sh
+
+  macos:
+    name: build (macos-14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: bash ./scripts/install-deps.sh
+
+      # No clang-format here on purpose: Homebrew would install a much newer
+      # version than the one .clang-format targets, and two formatters
+      # disagreeing is worse than one.  check.sh skips the gate when the binary
+      # is absent, so macOS proves the build and the tests, and Linux proves the
+      # formatting.
+      - name: Check - build, tests, config validation, refusals
+        run: ./scripts/check.sh

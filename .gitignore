@@ -3,3 +3,8 @@
 
 # Local scratch space used by some agent workflows. Not a shared artefact.
 .scratch/
+
+# Build trees.  check.sh builds into build/ by default and CMake writes
+# compile_commands.json there for clangd and the agents that read it.
+build/
+build-*/
