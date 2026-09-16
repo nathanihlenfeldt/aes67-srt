@@ -77,8 +77,16 @@ somebody "fixes" it.
 - **The 64-channel mapping** — which AES67 stream carries which device channels — cannot be read from
   a running instance with no sinks or sources configured. It is the first task of ticket 09, where a
   sink is created for real; doing it as research first would duplicate that work.
-- **The fake daemon's required surface for CI** is now derivable from the API list above, and should
-  be written when the daemon client is built (ticket 09).
+- **The fake daemon's required surface for CI** — **done**, ticket 09 (`src/aes67/fake_daemon_client.*`).
+  Written from the API list above, and its answers are this report's: the config table, the locked
+  grandmaster, and the two senders below with the SDPs they announce. The one thing CI cannot check
+  until the Pi session is that the *real* daemon accepts the sink and source documents we build.
+- **Which fields a source document must carry** is the one thing the sibling could not lend us.
+  `aes67-sip` sets `ttl`, `dscp`, `payload_type` and `refclk_ptp_traceable` from its own
+  configuration; this appliance has no such settings and therefore sends none of them, on the
+  reasoning that inventing a site's multicast policy is worse than omitting a field. **Whether the
+  daemon defaults them or zeroes them is the first thing to measure on the Pi**, because a zeroed
+  `payload_type` would produce silence with nothing reporting it. Ticket 09, the real-daemon half.
 - **Whether 64 channels actually *stream*** — this opened the device and started recording. It did
   not verify continuity, underruns or that 64 channels of AES67 arrive. Tickets 09 and 10.
 - **The daemon's version** is not in this report. Provisioning cloned `master`; the commit should be
