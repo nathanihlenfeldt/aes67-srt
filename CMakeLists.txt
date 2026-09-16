@@ -64,6 +64,33 @@ if(NOT nlohmann_json_FOUND)
   FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
+# --- cpp-httplib (the aes67-daemon REST client) ----------------------------
+# The daemon is reached over HTTP, and this is the second dependency the
+# project takes: MIT, header-only, and the one the sibling `aes67-sip` has
+# already proved against this exact daemon (the spec says this module mirrors
+# `aes67-sip`'s `src/aes67/`).  Pinned to the same v0.56.0 the sibling runs.
+#
+# Fetched by URL rather than by git tag, matching the pattern above: a release
+# archive needs no git at configure time and no shallow clone to keep in sync.
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
+
+find_package(httplib QUIET)
+if(NOT httplib_FOUND)
+  if(NOT FETCH_DEPS)
+    message(FATAL_ERROR "cpp-httplib not found and FETCH_DEPS=OFF")
+  endif()
+  message(STATUS "cpp-httplib not found, fetching v0.56.0")
+  # Compile the header into its own target and install nothing: this project
+  # consumes it, it does not redistribute it.
+  set(HTTPLIB_COMPILE OFF CACHE BOOL "" FORCE)
+  set(HTTPLIB_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(httplib
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.56.0.tar.gz)
+  FetchContent_MakeAvailable(httplib)
+endif()
+
 find_package(Threads REQUIRED)
 
 # --- Detection only --------------------------------------------------------
@@ -129,7 +156,7 @@ target_compile_definitions(aes67-srt-core PUBLIC
   AES67_SRT_WITH_SRT=$<BOOL:${SRT_AVAILABLE}>
   AES67_SRT_WITH_ALSA=$<BOOL:${ALSA_AVAILABLE}>)
 target_link_libraries(aes67-srt-core
-  PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
+  PUBLIC nlohmann_json::nlohmann_json httplib::httplib Threads::Threads)
 
 # libsrt is linked only when it was found.  The transport compiles either way and
 # reports why it cannot open a link, so a development machine without it still
