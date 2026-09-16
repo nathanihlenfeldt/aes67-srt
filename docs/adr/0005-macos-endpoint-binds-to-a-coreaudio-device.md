@@ -2,7 +2,8 @@
 
 Status: **proposed** (2026-09-16), at the owner's request for an architecture. Nothing is built from
 it yet, and the reasoning below is the argument for adopting it rather than a report of something
-done. The product itself is in `docs/ROADMAP.md`.
+done. The product itself is in `docs/ROADMAP.md`. **It is not to be started until the appliance's v1
+is complete** — the owner's sequencing decision, recorded there.
 
 ## Context
 

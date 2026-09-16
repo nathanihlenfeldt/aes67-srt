@@ -80,5 +80,7 @@ backend to the core that exists.
 - **The appliance's non-goal is scoped rather than deleted.** `docs/spec/0001-aes67-srt.md` said "no
   macOS or Windows runtime target"; it now says no such target *for the appliance*, which still has
   none.
-- **No effect on v1.** Nothing here adds work to the appliance's tickets, and the constraint above is
-  already satisfied by the code as it stands.
+- **No effect on v1, and no work pulled forward.** Nothing here adds work to the appliance's tickets,
+  the constraint above is already satisfied by the code as it stands, and **the product itself waits
+  until the appliance's v1 is complete** — the owner's sequencing decision, recorded in
+  `docs/ROADMAP.md`. The appliance is what proves this core against real hardware, and it goes first.

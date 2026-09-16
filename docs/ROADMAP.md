@@ -10,7 +10,8 @@ Two different kinds of thing live here, and the difference matters:
   same plumbing, and phase 2 is the reason v1 carries a per-block payload type at all.
 - **The second product is a different program that extends this one** — a macOS application that
   bridges SRT to CoreAudio, at the end of this file. It shares the core and none of the plumbing
-  around it, which is what ADR 0004 is about.
+  around it, which is what ADR 0004 is about. **It does not start until the appliance is complete** —
+  see the sequencing note under it.
 
 ## Phase 1 — PCM transport (current)
 
@@ -129,9 +130,20 @@ already prove holds for two very different devices. **That is why ADR 0004 exist
 second product is real, "keep the core free of ALSA, libsrt-specific, daemon and Linux assumptions"
 stops being a style preference and becomes a constraint on every future commit.
 
-**It is not blocked on v1.** The core already builds and runs its whole test suite on macOS, so this
-can start before the appliance's own tickets finish without waiting for anything. It is the only
-thing on this roadmap for which that is true.
+### Sequencing: the appliance is finished first
+
+**Decided 2026-09-16: none of this is started until the appliance's v1 is complete** — phase 1's
+tickets closed, including its hardware acceptance rather than deferring it.
+
+The reason is the one this project keeps rediscovering: the Mac endpoint is built on the same core, so
+starting it early takes time from the thing that proves that core against reality, and it invites
+changing `wire`, `transport` or `engine` *before* they have been through real hardware once. The
+appliance is the only artefact that can tell us the core is right; two products growing on an
+unproven core would mean changing it under both.
+
+This was written on this page as "it is not blocked on v1" and the owner overruled that. The earlier
+wording was true about *dependencies* and wrong about *priority*, which is the distinction that
+matters here.
 
 ### Settled: it is the family's endpoint, not an SRT bridge
 
@@ -193,6 +205,10 @@ The second is a second implementation of the same seam, which is exactly what AD
 possible. Doing the first does not foreclose it.
 
 ### The order of work, cheapest risk first
+
+**After the appliance is complete** — the order below is the order *within* this product, not a queue
+running alongside phase 1. Step 1 is deliberately the smallest possible thing that proves the seam:
+no driver, no signing, no appliance, no network.
 
 1. `CoreAudioBackend` against a real CoreAudio device, with the engine running end to end on the Mac
    and **no appliance and no SRT involved**: the loopback test we already have, on real hardware.
