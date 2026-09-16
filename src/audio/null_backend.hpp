@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -46,8 +47,14 @@ class NullBackend : public AudioBackend {
   AudioFormat format_;
   std::vector<uint8_t> loopback_;  // holds at most one period
   size_t pending_ = 0;             // bytes of loopback_ actually carrying audio
-  unsigned overruns_ = 0;
-  unsigned underruns_ = 0;
+  /**
+   * Atomic because the audio thread increments them and the status page reads
+   * them. The interface's "one thread at a time" governs read/write/open/close;
+   * a counter is read from somewhere else, and a torn read of a plain `unsigned`
+   * is undefined behaviour even where it happens to work.
+   */
+  std::atomic<unsigned> overruns_{0};
+  std::atomic<unsigned> underruns_{0};
 };
 
 }  // namespace aes67_srt::audio

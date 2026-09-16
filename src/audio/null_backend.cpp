@@ -13,36 +13,6 @@ bool fail(std::string* error, const std::string& message) {
   return false;
 }
 
-/** A backend the caller asked for that this build cannot provide. */
-class UnavailableBackend : public AudioBackend {
- public:
-  explicit UnavailableBackend(std::string reason) : reason_(std::move(reason)) {}
-
-  bool open(const AudioFormat&, std::string* error) override {
-    return fail(error, reason_);
-  }
-  void close() override {}
-  bool is_open() const override { return false; }
-
-  bool read(uint8_t*, unsigned, std::string* error) override {
-    return fail(error, reason_);
-  }
-  bool write(const uint8_t*, unsigned, std::string* error) override {
-    return fail(error, reason_);
-  }
-
-  std::string kind() const override { return "unavailable"; }
-  std::string detail() const override { return reason_; }
-  const AudioFormat& format() const override { return format_; }
-
-  unsigned overruns() const override { return 0; }
-  unsigned underruns() const override { return 0; }
-
- private:
-  std::string reason_;
-  AudioFormat format_;
-};
-
 }  // namespace
 
 bool NullBackend::open(const AudioFormat& format, std::string* error) {
@@ -143,48 +113,15 @@ const AudioFormat& NullBackend::format() const {
 }
 
 unsigned NullBackend::overruns() const {
-  return overruns_;
+  return overruns_.load();
 }
 
 unsigned NullBackend::underruns() const {
-  return underruns_;
+  return underruns_.load();
 }
 
 size_t NullBackend::pending_bytes() const {
   return pending_;
-}
-
-bool ravenna_backend_available() {
-#if AES67_SRT_WITH_ALSA
-  return true;
-#else
-  return false;
-#endif
-}
-
-bool null_backend_available() {
-  return true;
-}
-
-std::unique_ptr<AudioBackend> create_audio_backend(const AudioConfig& config) {
-  if (config.backend == "null") {
-    return std::unique_ptr<AudioBackend>(new NullBackend());
-  }
-  if (config.backend == "ravenna") {
-    if (ravenna_backend_available()) {
-      // The ALSA backend lands with ticket 09's second slice; until it exists this
-      // build has no ALSA path, and saying so is better than a null pointer the
-      // caller has to interpret.
-      return std::unique_ptr<AudioBackend>(new UnavailableBackend(
-          "audio.backend: the ALSA/RAVENNA backend is not built into this binary "
-          "yet"));
-    }
-    return std::unique_ptr<AudioBackend>(new UnavailableBackend(
-        "audio.backend: this build has no ALSA support; configure with ALSA "
-        "present, or use \"null\""));
-  }
-  return std::unique_ptr<AudioBackend>(new UnavailableBackend(
-      "audio.backend: unknown backend \"" + config.backend + "\""));
 }
 
 }  // namespace aes67_srt::audio
