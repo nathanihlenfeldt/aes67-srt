@@ -32,8 +32,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ---------------------------------------------------------------------------
 set(WITH_SRT "AUTO" CACHE STRING "Build the SRT transport: ON, OFF or AUTO")
 set(WITH_ALSA "AUTO" CACHE STRING "Build the RAVENNA/ALSA backend: ON, OFF or AUTO")
+set(WITH_SAMPLERATE "AUTO" CACHE STRING "Build the clock's resampler: ON, OFF or AUTO")
 set_property(CACHE WITH_SRT PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_ALSA PROPERTY STRINGS ON OFF AUTO)
+set_property(CACHE WITH_SAMPLERATE PROPERTY STRINGS ON OFF AUTO)
 
 option(WITH_TESTS "Build unit tests" ON)
 option(WITH_WEBUI "Build the web UI (requires npm)" OFF)
@@ -93,12 +95,16 @@ endif()
 
 find_package(Threads REQUIRED)
 
-# --- Detection only --------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Detection only
 #
-# libsrt and ALSA are detected and reported, but nothing consumes them yet:
-# ticket 05 builds the skeleton, and the transport and audio modules land in
-# tickets 07 and 08.  Detecting them now is what makes the AUTO options real
-# rather than aspirational.
+# libsrt and ALSA are consumed by the transport and the audio module, and
+# libsamplerate is detected ahead of the clock module's resampler (increment 3
+# of ticket 11, issue #12).  All three are detected before anything consumes
+# them, which is what makes the AUTO options real rather than aspirational:
+# an absent piece degrades to a status line and a refusal at runtime, never to
+# a project that will not configure.
+# ---------------------------------------------------------------------------
 set(SRT_AVAILABLE FALSE)
 if(NOT WITH_SRT STREQUAL "OFF")
   # HINTS: Homebrew on Apple Silicon installs under /opt/homebrew, which CMake
@@ -129,6 +135,31 @@ if(NOT WITH_ALSA STREQUAL "OFF")
     message(FATAL_ERROR "WITH_ALSA=ON but libasound was not found")
   else()
     message(STATUS "ALSA not found - the RAVENNA backend will refuse to open")
+  endif()
+endif()
+
+# libsamplerate is not a free choice: ADR 0003 measured continuous resampling
+# *with* this library, so the clock's resampler is committed to it.  The HINTS
+# are the same Homebrew ones as libsrt's; on Linux the package is
+# libsamplerate0-dev and lands on the default search path.
+set(SAMPLERATE_AVAILABLE FALSE)
+if(NOT WITH_SAMPLERATE STREQUAL "OFF")
+  find_path(SAMPLERATE_INCLUDE_DIR samplerate.h
+    HINTS /opt/homebrew/include /usr/local/include)
+  find_library(SAMPLERATE_LIBRARY NAMES samplerate
+    HINTS /opt/homebrew/lib /usr/local/lib)
+  if(SAMPLERATE_INCLUDE_DIR AND SAMPLERATE_LIBRARY)
+    set(SAMPLERATE_AVAILABLE TRUE)
+    message(STATUS "libsamplerate found: ${SAMPLERATE_LIBRARY}")
+  elseif(WITH_SAMPLERATE STREQUAL "ON")
+    message(FATAL_ERROR
+      "WITH_SAMPLERATE=ON but libsamplerate was not found "
+      "(macOS: brew install libsamplerate; Debian/Ubuntu: "
+      "apt install libsamplerate0-dev)")
+  else()
+    message(STATUS
+      "libsamplerate not found - the clock will refuse to resample, and its "
+      "resampler tests will skip")
   endif()
 endif()
 
@@ -193,6 +224,20 @@ if(ALSA_AVAILABLE)
   message(STATUS "audio: RAVENNA backend linked from ${ALSA_LIBRARY}")
 else()
   message(STATUS "audio: built without ALSA - the RAVENNA backend will refuse to open")
+endif()
+
+# libsamplerate is linked as soon as it is found, before anything includes its
+# header.  That is deliberate: the install path spans two platforms, and the
+# failure this avoids is discovering in a later commit that one of them never had
+# the package - at which point the clock's tests would skip there, and a skipped
+# test counts as a pass.  Linking here means both CI jobs prove the library is
+# present and linkable from the commit that introduces the dependency.
+if(SAMPLERATE_AVAILABLE)
+  target_include_directories(aes67-srt-core PRIVATE "${SAMPLERATE_INCLUDE_DIR}")
+  target_link_libraries(aes67-srt-core PRIVATE "${SAMPLERATE_LIBRARY}")
+  message(STATUS "clock: libsamplerate linked from ${SAMPLERATE_LIBRARY}")
+else()
+  message(STATUS "clock: built without libsamplerate - the resampler will refuse")
 endif()
 
 add_executable(aes67-srt src/main.cpp)
@@ -264,6 +309,7 @@ message(STATUS "aes67-srt ${PROJECT_VERSION} configuration")
 message(STATUS "  build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  libsrt     : ${SRT_AVAILABLE}")
 message(STATUS "  ALSA       : ${ALSA_AVAILABLE} (RAVENNA backend)")
+message(STATUS "  samplerate : ${SAMPLERATE_AVAILABLE} (the clock's resampler)")
 message(STATUS "  tests      : ${WITH_TESTS}")
 message(STATUS "  web UI     : ${WITH_WEBUI} (not implemented yet)")
 message(STATUS "")

@@ -54,7 +54,16 @@ sudo apt install libsrt-openssl-dev  # Debian/Ubuntu
 cmake -S . -B build                  # libsrt is detected automatically
 ```
 
-ALSA is Linux-only and not needed yet: the audio backend is still to be written.
+**libsamplerate is what the clock module resamples with** (ADR 0003), and it is detected the same
+way:
+
+```sh
+brew install libsamplerate             # macOS
+sudo apt install libsamplerate0-dev    # Debian/Ubuntu
+```
+
+ALSA is Linux-only and detected automatically: where it is absent the RAVENNA backend declines to
+open and says why, rather than the build failing.
 
 ```sh
 cmake -S . -B build
