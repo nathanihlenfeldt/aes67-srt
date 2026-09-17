@@ -588,6 +588,7 @@ uint64_t Engine::silence_periods() const {
 EngineStatus Engine::status() {
   EngineStatus snapshot;
   snapshot.running = running_.load();
+  snapshot.link_open = link_ != nullptr && link_->is_open();
   snapshot.frames_sent = frames_sent_.load();
   snapshot.frames_received = frames_received_.load();
   snapshot.frames_refused = frames_refused_.load();

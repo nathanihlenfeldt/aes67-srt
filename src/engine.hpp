@@ -33,6 +33,7 @@ namespace aes67_srt {
  */
 struct EngineStatus {
   bool running = false;
+  bool link_open = false;
   uint64_t frames_sent = 0;
   uint64_t frames_received = 0;
   uint64_t frames_refused = 0;

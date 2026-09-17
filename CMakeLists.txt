@@ -183,6 +183,7 @@ set(AES67_SRT_SOURCES
   src/delay/delay_line.cpp
   src/delay/test_signal.cpp
   src/engine.cpp
+  src/http/api_server.cpp
   src/log.cpp
   src/transport/link.cpp
   src/util.cpp
