@@ -15,6 +15,7 @@ add_executable(aes67-srt-tests
   test_delay_line.cpp
   test_engine.cpp
   test_main.cpp
+  test_test_signal.cpp
   test_transport.cpp
   test_wire.cpp)
 
