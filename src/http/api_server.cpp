@@ -96,142 +96,203 @@ const char* k_fallback_page = R"HTML(<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>aes67-srt</title>
 <style>
- body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 46rem; color: #111; }
- h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
- .sub { color: #666; margin: 0 0 1.5rem; }
- table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
- th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #ddd; vertical-align: top; }
- .ok { color: #0a7d28; } .bad { color: #b00020; font-weight: 600; }
- .num { font-variant-numeric: tabular-nums; }
- .controls { margin: 1rem 0 2rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
- .controls input { width: 6rem; padding: .2rem .3rem; }
- #controlmsg { color: #666; }
- h2 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
- .config label { display: inline-block; margin: 0 1rem .6rem 0; }
- .config input, .config select { padding: .15rem .3rem; }
- #configmsg, #controlmsg { color: #666; }
- code { background: #f4f4f4; padding: .1rem .3rem; border-radius: 3px; }
+ :root {
+   --bg:#f5f6f8; --surface:#ffffff; --border:#dde1e6; --text:#191d21; --muted:#606a74;
+   --ok:#157f3b; --bad:#b42318; --ok-bg:#e7f6ec; --bad-bg:#fdecea; --radius:8px;
+   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+ }
+ @media (prefers-color-scheme: dark) {
+   :root { --bg:#0f1214; --surface:#171b1f; --border:#2a3037; --text:#e8ecf0;
+           --muted:#9aa4ad; --ok:#5bd07b; --bad:#ff7a70; --ok-bg:#16301f; --bad-bg:#3a1c1a; }
+ }
+ * { box-sizing:border-box; }
+ body { margin:0; background:var(--bg); color:var(--text);
+        font:15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+ header { display:flex; align-items:baseline; gap:.75rem; flex-wrap:wrap;
+          padding:.9rem 1.25rem; border-bottom:1px solid var(--border); background:var(--surface); }
+ header .brand { font-weight:650; letter-spacing:-.01em; }
+ header .meta { color:var(--muted); font-size:.85rem; overflow-wrap:anywhere; }
+ main { max-width:64rem; margin:0 auto; padding:1.25rem; display:grid; gap:1rem;
+        grid-template-columns:repeat(auto-fit, minmax(21rem, 1fr)); }
+ .card { background:var(--surface); border:1px solid var(--border);
+         border-radius:var(--radius); padding:1rem 1.1rem; }
+ .card h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.06em;
+            color:var(--muted); margin:0 0 .7rem; font-weight:600; }
+ .wide { grid-column:1 / -1; }
+ .pill { display:inline-block; padding:.05rem .5rem; border-radius:999px; font-size:.78rem; font-weight:600; }
+ .pill.ok { background:var(--ok-bg); color:var(--ok); }
+ .pill.bad { background:var(--bad-bg); color:var(--bad); }
+ .row { display:grid; grid-template-columns:5.5rem 3.2rem 1fr; gap:.6rem;
+        align-items:baseline; padding:.35rem 0; border-top:1px solid var(--border); }
+ .row:first-child { border-top:0; }
+ .row .name { font-weight:600; }
+ .row .detail { color:var(--muted); font-size:.88rem; overflow-wrap:anywhere; }
+ .figures { display:grid; grid-template-columns:1fr auto; gap:.3rem .75rem; margin:0; }
+ .figures dt { color:var(--muted); }
+ .figures dd { margin:0; font-family:var(--mono); font-variant-numeric:tabular-nums; text-align:right; }
+ .controls { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+ label { color:var(--muted); font-size:.9rem; }
+ input, select, button { font:inherit; color:var(--text); background:var(--surface);
+                         border:1px solid var(--border); border-radius:6px; padding:.3rem .45rem; }
+ input[type=number] { width:6rem; font-family:var(--mono); }
+ button { cursor:pointer; }
+ button:hover { border-color:var(--muted); }
+ button:focus-visible, input:focus-visible, select:focus-visible { outline:2px solid var(--ok); outline-offset:1px; }
+ .msg { font-size:.88rem; }
+ .msg.ok { color:var(--ok); } .msg.bad { color:var(--bad); }
+ .form { display:grid; grid-template-columns:repeat(auto-fit, minmax(11rem, 1fr)); gap:.6rem; }
+ .form .actions { grid-column:1 / -1; display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }
+ .banner { border-radius:var(--radius); padding:.65rem .9rem; font-weight:500; }
+ .banner.bad { background:var(--bad-bg); color:var(--bad); }
+ footer { max-width:64rem; margin:0 auto; padding:0 1.25rem 2rem; color:var(--muted); font-size:.8rem; }
 </style>
 </head>
 <body>
-<h1>aes67-srt</h1>
-<p class="sub" id="version">loading…</p>
-<div id="root">loading…</div>
-<div class="controls">
-  <label>A/V delay (ms): <input id="delay" type="number" min="0" max="5000" step="0.1"></label>
-  <button onclick="setDelay()">Set</button>
-  <button onclick="triggerTestSignal()">Trigger test signal</button>
-  <span id="controlmsg"></span>
-</div>
-<h2>SRT link</h2>
-<form class="config" onsubmit="return false;">
-  <label>mode <select id="c_mode"><option>caller</option><option>listener</option><option>rendezvous</option><option>loopback</option></select></label>
-  <label>role <select id="c_role"><option>tx</option><option>rx</option><option>duplex</option></select></label>
-  <label>peer <input id="c_peer" size="16" placeholder="host:port"></label>
-  <label>local port <input id="c_local_port" type="number" size="6"></label>
-  <label>latency (ms) <input id="c_latency_ms" type="number" size="6"></label>
-  <label>blocks <input id="c_blocks" type="number" min="1" max="8" size="2"></label>
-  <label>passphrase <input id="c_passphrase" type="password" size="12"></label>
-  <button onclick="saveLink()">Save SRT settings</button>
-  <span id="configmsg"></span>
-</form>
+<header>
+  <span class="brand">aes67-srt</span>
+  <span class="meta" id="meta">connecting&hellip;</span>
+  <span class="pill" id="runpill" style="margin-left:auto">&hellip;</span>
+</header>
+<main>
+  <div id="banner" class="banner bad wide" hidden></div>
+  <section class="card">
+    <h2>Preflight</h2>
+    <div id="checks"></div>
+  </section>
+  <section class="card">
+    <h2>Live</h2>
+    <dl class="figures" id="figures"></dl>
+  </section>
+  <section class="card wide">
+    <h2>A/V alignment</h2>
+    <div class="controls">
+      <label for="delay">Delay (ms)</label>
+      <input id="delay" type="number" min="0" max="5000" step="0.1">
+      <button id="setdelay" type="button">Set delay</button>
+      <button id="trigger" type="button">Trigger test signal</button>
+      <span class="msg" id="controlmsg" role="status"></span>
+    </div>
+  </section>
+  <section class="card wide">
+    <h2>SRT link</h2>
+    <form class="form" id="linkform" onsubmit="return false;">
+      <label>Mode<br><select id="c_mode"><option>caller</option><option>listener</option><option>rendezvous</option><option>loopback</option></select></label>
+      <label>Role<br><select id="c_role"><option>tx</option><option>rx</option><option>duplex</option></select></label>
+      <label>Peer<br><input id="c_peer" placeholder="host:port"></label>
+      <label>Local port<br><input id="c_local_port" type="number"></label>
+      <label>Latency (ms)<br><input id="c_latency_ms" type="number"></label>
+      <label>Blocks<br><input id="c_blocks" type="number" min="1" max="8"></label>
+      <label>Passphrase<br><input id="c_passphrase" type="password"></label>
+      <div class="actions">
+        <button id="savelink" type="button">Save SRT settings</button>
+        <span class="msg" id="configmsg" role="status"></span>
+      </div>
+    </form>
+  </section>
+</main>
+<footer>Configuration is validated before it is written; a field that needs a restart says so.</footer>
 <script>
+const $ = (id) => document.getElementById(id);
+const pill = (ok) => '<span class="pill ' + (ok ? 'ok' : 'bad') + '">' + (ok ? 'ok' : 'FAIL') + '</span>';
+function banner(text) { const b = $('banner'); if (!text) { b.hidden = true; return; } b.hidden = false; b.textContent = text; }
+
+async function poll() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    $('meta').textContent = 'v' + s.version + ' · ' + s.build + ' · ' + s.role + ' ' + s.mode + (s.peer ? ' → ' + s.peer : '');
+    $('runpill').className = 'pill ' + (s.engine.running ? 'ok' : 'bad');
+    $('runpill').textContent = s.engine.running ? 'running' : 'stopped';
+
+    const p = s.preflight || { ok: false, checks: [] };
+    $('checks').innerHTML = p.checks.map((c) =>
+      '<div class="row"><span class="name">' + c.name + '</span>' + pill(c.ok) +
+      '<span class="detail">' + c.detail + '</span></div>').join('');
+
+    const e = s.engine;
+    const figures = [
+      ['playout delay', e.delay_ms.toFixed(1) + ' ms'],
+      ['A/V offset', e.egress_delay_ms.toFixed(1) + ' ms'],
+      ['total A/V delay', e.av_delay_ms.toFixed(1) + ' ms'],
+      ['clock correction', e.clock_offset_ppm.toFixed(2) + ' ppm'],
+      ['clock ratio', e.clock_ratio.toFixed(9)],
+      ['frames sent', e.frames_sent],
+      ['frames received', e.frames_received],
+      ['frames refused', e.frames_refused],
+      ['silence periods', e.silence_periods]
+    ];
+    if (s.link && s.link.available) {
+      figures.push(['RTT', s.link.rtt_ms.toFixed(1) + ' ms'],
+                   ['bandwidth', s.link.bandwidth_mbps.toFixed(1) + ' Mbps'],
+                   ['receive rate', s.link.receive_rate_mbps.toFixed(1) + ' Mbps'],
+                   ['packets dropped', s.link.packets_dropped]);
+    }
+    $('figures').innerHTML = figures.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('');
+
+    const notices = [];
+    if (!p.ok) notices.push('Preflight failed: audio will not flow until every check passes.');
+    if (s.pending_restart && s.pending_restart.length) notices.push('Saved, waiting for a restart: ' + s.pending_restart.join(', '));
+    banner(notices.join(' '));
+
+    const d = $('delay');
+    if (document.activeElement !== d) d.value = e.egress_delay_ms;
+  } catch (err) {
+    $('meta').textContent = 'unreachable';
+    $('runpill').className = 'pill bad';
+    $('runpill').textContent = 'no connection';
+    banner('Cannot reach the appliance: ' + err);
+  }
+}
+
+$('setdelay').onclick = async () => {
+  const value = parseFloat($('delay').value);
+  const r = await fetch('/api/egress/delay', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ delay_ms: value }) });
+  const m = $('controlmsg');
+  if (r.ok) { m.className = 'msg ok'; m.textContent = 'delay set to ' + value + ' ms'; }
+  else { m.className = 'msg bad'; m.textContent = await r.text(); }
+};
+$('trigger').onclick = async () => {
+  const r = await fetch('/api/egress/test-signal', { method: 'POST' });
+  const m = $('controlmsg');
+  m.className = r.ok ? 'msg ok' : 'msg bad';
+  m.textContent = r.ok ? 'impulse fired' : await r.text();
+};
+
 let currentConfig = null;
 async function loadConfig() {
   try {
-    const r = await fetch('/api/config');
-    currentConfig = await r.json();
+    currentConfig = await (await fetch('/api/config')).json();
     const l = currentConfig.link;
-    document.getElementById('c_mode').value = l.mode;
-    document.getElementById('c_role').value = l.role;
-    document.getElementById('c_peer').value = l.peer || '';
-    document.getElementById('c_local_port').value = l.local_port;
-    document.getElementById('c_latency_ms').value = l.latency_ms;
-    document.getElementById('c_blocks').value = l.blocks;
-    document.getElementById('c_passphrase').value = l.passphrase || '';
-  } catch (e) { /* the status poll already reports an unreachable appliance */ }
+    $('c_mode').value = l.mode; $('c_role').value = l.role;
+    $('c_peer').value = l.peer || ''; $('c_local_port').value = l.local_port;
+    $('c_latency_ms').value = l.latency_ms; $('c_blocks').value = l.blocks;
+    $('c_passphrase').value = l.passphrase || '';
+  } catch (e) { /* the status poll reports an unreachable appliance */ }
 }
-async function saveLink() {
-  if (!currentConfig) { await loadConfig(); }
+$('savelink').onclick = async () => {
+  if (!currentConfig) await loadConfig();
   if (!currentConfig) return;
-  const num = (id) => parseInt(document.getElementById(id).value, 10);
-  currentConfig.link.mode = document.getElementById('c_mode').value;
-  currentConfig.link.role = document.getElementById('c_role').value;
-  currentConfig.link.peer = document.getElementById('c_peer').value;
-  currentConfig.link.local_port = num('c_local_port');
-  currentConfig.link.latency_ms = num('c_latency_ms');
-  currentConfig.link.blocks = num('c_blocks');
-  currentConfig.link.passphrase = document.getElementById('c_passphrase').value;
-  const msg = document.getElementById('configmsg');
-  const r = await fetch('/api/config', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(currentConfig)
-  });
-  if (!r.ok) {
-    msg.className = 'bad';
-    msg.textContent = await r.text();
-    return;
-  }
+  const n = (id) => parseInt($(id).value, 10);
+  currentConfig.link.mode = $('c_mode').value;
+  currentConfig.link.role = $('c_role').value;
+  currentConfig.link.peer = $('c_peer').value;
+  currentConfig.link.local_port = n('c_local_port');
+  currentConfig.link.latency_ms = n('c_latency_ms');
+  currentConfig.link.blocks = n('c_blocks');
+  currentConfig.link.passphrase = $('c_passphrase').value;
+  const r = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentConfig) });
+  const m = $('configmsg');
+  if (!r.ok) { m.className = 'msg bad'; m.textContent = await r.text(); return; }
   const res = await r.json();
   const restart = res.restart_required || [];
-  msg.className = restart.length ? 'bad' : 'ok';
-  msg.textContent = restart.length
-    ? 'saved to ' + res.path + ' -- restart the appliance to apply: ' + restart.join(', ')
+  m.className = restart.length ? 'msg bad' : 'msg ok';
+  m.textContent = restart.length
+    ? 'saved to ' + res.path + ' — restart to apply: ' + restart.join(', ')
     : 'saved to ' + res.path;
-}
-async function setDelay() {
-  const value = parseFloat(document.getElementById('delay').value);
-  const r = await fetch('/api/egress/delay', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({delay_ms: value})
-  });
-  document.getElementById('controlmsg').textContent =
-    r.ok ? 'A/V delay set to ' + value + ' ms' : await r.text();
-}
-async function triggerTestSignal() {
-  const r = await fetch('/api/egress/test-signal', {method: 'POST'});
-  document.getElementById('controlmsg').textContent =
-    r.ok ? 'impulse fired' : await r.text();
-}
-async function poll() {
-  try {
-    const r = await fetch('/api/status');
-    const s = await r.json();
-    const delayInput = document.getElementById('delay');
-    if (document.activeElement !== delayInput) {
-      delayInput.value = s.engine.egress_delay_ms;
-    }
-    document.getElementById('version').textContent =
-      s.name + ' ' + s.version + ' (' + s.build + '), ' + s.role + ' ' + s.mode +
-      (s.peer ? ' to ' + s.peer : '');
-    const p = s.preflight || { checks: [] };
-    let html = '<table><tr><th>check</th><th>state</th><th>detail</th></tr>';
-    for (const c of p.checks) {
-      html += '<tr><td>' + c.name + '</td><td class="' + (c.ok ? 'ok' : 'bad') + '">' +
-        (c.ok ? 'ok' : 'FAIL') + '</td><td>' + c.detail + '</td></tr>';
-    }
-    html += '</table>';
-    html += '<table><tr><th>figure</th><th>value</th></tr>' +
-      '<tr><td>playout delay</td><td class="num">' + s.engine.delay_ms.toFixed(1) + ' ms</td></tr>' +
-      '<tr><td>A/V offset</td><td class="num">' + s.engine.egress_delay_ms.toFixed(1) + ' ms</td></tr>' +
-      '<tr><td>clock correction</td><td class="num">' + s.engine.clock_offset_ppm.toFixed(2) + ' ppm</td></tr>' +
-      '<tr><td>frames sent / received / refused</td><td class="num">' +
-        s.engine.frames_sent + ' / ' + s.engine.frames_received + ' / ' +
-        s.engine.frames_refused + '</td></tr></table>';
-    if (!p.ok) {
-      html = '<p class="bad">Preflight failed: audio will not flow until the checks below pass.</p>' + html;
-    }
-    if (s.pending_restart && s.pending_restart.length) {
-      html = '<p class="bad">Configuration saved, waiting for a restart: ' +
-        s.pending_restart.join(', ') + '</p>' + html;
-    }
-    document.getElementById('root').innerHTML = html;
-  } catch (e) {
-    document.getElementById('root').textContent = 'cannot reach the appliance: ' + e;
-  }
-}
+};
+
 poll();
 setInterval(poll, 1000);
 loadConfig();
