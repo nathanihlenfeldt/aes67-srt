@@ -264,10 +264,27 @@ a configuration flag. Better to know that before someone assumes a `bonded: true
    still arrives, only later". The docs support the intent but never state it. **Measure it in
    ticket 07**: starve a link deliberately and assert no frame is lost, the delay grows, and
    `pktRcvDrop` stays at zero.
-2. **AES-CTR cost at 148 Mbit/s on the target Pi.** Ticket 07.
+2. ~~**AES-CTR cost at 148 Mbit/s on the target Pi.**~~ **Taken** — it is measured in the section
+   above, and was measured again on 2026-09-17 with the same ~3.2 GB/s in 16 KB blocks, so a
+   passphrase costs well under 1% of a core. The entry was left here after the measurement landed,
+   which is the kind of stale to-do this document should not carry.
 3. **Rendezvous through the actual site NATs.** Ticket 09, on the real links.
-4. **Whether the shipped libsrt has bonding compiled in.** Depends on the distribution package that
-   ticket 15's installer selects. Recorded here so that nobody assumes it.
+4. ~~**Whether the shipped libsrt has bonding compiled in.**~~ **Answered on the target, 2026-09-17,
+   and the answer is no.** Not by hunting symbols — the symbol `srt_connect_group` *is* exported,
+   which is exactly why symbol-hunting would have got this wrong — but by asking the library to do
+   it:
+
+   ```
+   libsrt 1.5.4 (packed 0x00010504)
+   SRT.ac: OPTION: #57 UNKNOWN
+   SRTO_GROUPCONNECT accepted: no  (Operation not supported: Bad parameters)
+   srt_connect_group symbol present: yes
+   ```
+
+   `SRTO_GROUPCONNECT` is unknown to this build, so bonding cannot be enabled even by a caller who
+   tries. That is *this* package (Debian's `libsrt-gnutls` 1.5.4 on the Pi); the conclusion for
+   ticket 15's installer is that whichever package it selects decides this, and the check above is
+   the five-line way to know rather than assume.
 5. **Buffer sizing at 148 Mbit/s.** `docs/API/configuration-guidelines.md:17` (the default receiver
    buffer is 8192 packets) and `SRTO_SNDBUF`/`SRTO_RCVBUF` are the next sources. Not researched
    here, and ticket 07 will likely need them.
