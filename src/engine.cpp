@@ -726,11 +726,20 @@ void Engine::status_loop() {
 }
 
 bool Engine::open(std::string* error) {
-  if (!backend_->open(format_, error)) {
+  // **The link first, then the device**, and the order matters twice over.
+  //
+  // A listener waits here for a caller, and if the audio device were opened first
+  // it would sit open and unserviced until somebody connected — long enough for a
+  // RAVENNA device to land in XRUN, which it then does not come back from. And the
+  // wait is the thing a stop has to be able to interrupt, so it is the thing the
+  // stop flag has to be visible to.
+  stop_requested_ = false;
+  link_->set_abort_flag(&stop_requested_);
+  if (!link_->open(config_, error)) {
     return false;
   }
-  if (!link_->open(config_, error)) {
-    backend_->close();
+  if (!backend_->open(format_, error)) {
+    link_->close();
     return false;
   }
   // Non-blocking rather than short: this loop has a device to feed every

@@ -318,6 +318,29 @@ bool RavennaBackend::read(uint8_t* destination, unsigned frames,
     while (remaining > 0) {
       const int ready = snd_pcm_wait(capture_, k_wait_timeout_ms);
       if (ready < 0) {
+        if (ready == -EPIPE) {
+          // The **wait** reports the overrun before `readi` can, so the recovery
+          // below never ran and the device stayed XRUN for ever -- which is how a
+          // listener that opened the device and then waited for a caller (see
+          // Engine::open) ended up unable to produce a single frame. Recover here
+          // exactly as the read path does.
+          ++overruns_;
+          if (snd_pcm_prepare(capture_) < 0) {
+            fill_silence(destination + offset, remaining);
+            return fail(error, "capture overrun and the device would not prepare");
+          }
+          std::string restart_error;
+          if (!start_stream(capture_, &restart_error)) {
+            log().write(
+                LogLevel::warn,
+                "cannot restart capture after an overrun: " + restart_error);
+          }
+          fill_silence(destination + offset, remaining);
+          if (error != nullptr) {
+            *error = "capture overrun (recovered while waiting)";
+          }
+          return true;
+        }
         fill_silence(destination + offset, remaining);
         return fail(error,
                     "capture wait failed: " + std::string(snd_strerror(ready)));
@@ -404,6 +427,24 @@ bool RavennaBackend::write(const uint8_t* source, unsigned frames,
   while (remaining > 0) {
     const int ready = snd_pcm_wait(playback_, k_wait_timeout_ms);
     if (ready < 0) {
+      if (ready == -EPIPE) {
+        // Same as the capture side: the wait reports the underrun first, and
+        // without recovering here the device never ticks again.
+        ++underruns_;
+        if (snd_pcm_prepare(playback_) < 0) {
+          return fail(error, "playback underrun and the device would not prepare");
+        }
+        std::string restart_error;
+        if (!start_stream(playback_, &restart_error)) {
+          log().write(
+              LogLevel::warn,
+              "cannot restart playback after an underrun: " + restart_error);
+        }
+        if (error != nullptr) {
+          *error = "playback underrun (recovered while waiting)";
+        }
+        return true;
+      }
       return fail(error,
                   "playback wait failed: " + std::string(snd_strerror(ready)));
     }

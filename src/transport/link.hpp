@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -128,6 +129,17 @@ class Link {
    * decision 6 forbids.
    */
   void set_nonblocking();
+
+  /**
+   * The flag a listener watches while it waits for a caller.
+   *
+   * A listener blocks in `srt_accept` until somebody connects — which can be for
+   * ever — and a signal cannot interrupt it. Without this, SIGTERM during that wait
+   * is ignored and `systemctl stop` waits out `TimeoutStopSec` and kills the
+   * process. The accept is polled against this flag so a stop is answered in tens
+   * of milliseconds instead. Pass the engine's stop flag before `open`.
+   */
+  void set_abort_flag(std::atomic<bool>* flag);
 
   /** Statistics for the UI. Fails rather than returning plausible zeroes. */
   bool stats(LinkStats* out, std::string* error) const;

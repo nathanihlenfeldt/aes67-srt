@@ -1,11 +1,13 @@
 #include "transport/link.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <deque>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 #include "log.hpp"
@@ -74,6 +76,8 @@ struct Link::Impl {
 #endif
   bool opened = false;
   int receive_timeout_ms = 500;
+  /** The engine's stop flag, watched while a listener waits for a caller. */
+  std::atomic<bool>* abort = nullptr;
   std::chrono::steady_clock::time_point opened_at;
   std::string peer;
   std::string mode;
@@ -180,6 +184,10 @@ void Link::set_nonblocking() {
   }
   set_bool(impl_->socket, SRTO_RCVSYN, false);
 #endif
+}
+
+void Link::set_abort_flag(std::atomic<bool>* flag) {
+  impl_->abort = flag;
 }
 
 std::string Link::peer_description() const {
@@ -330,9 +338,25 @@ bool Link::open(const Config& config, std::string* error) {
     if (srt_listen(socket, 1) == SRT_ERROR) {
       return refuse("srt_listen", "");
     }
-    const SRTSOCKET accepted = srt_accept(socket, nullptr, nullptr);
-    if (accepted == SRT_INVALID_SOCK) {
-      return refuse("srt_accept", "");
+    // A non-blocking accept, polled, so that a stop request is answered while the
+    // listener waits for a caller. Blocking here means SIGTERM is ignored until
+    // somebody connects, and `systemctl stop` then waits out `TimeoutStopSec`.
+    set_bool(socket, SRTO_RCVSYN, false);
+    SRTSOCKET accepted = SRT_INVALID_SOCK;
+    for (;;) {
+      accepted = srt_accept(socket, nullptr, nullptr);
+      if (accepted != SRT_INVALID_SOCK) {
+        break;
+      }
+      const int code = srt_getlasterror(nullptr);
+      if (code != SRT_EASYNCRCV) {
+        return refuse("srt_accept", "");
+      }
+      if (impl_->abort != nullptr && impl_->abort->load()) {
+        srt_close(socket);
+        return fail(error, "srt_accept: stopped while waiting for a caller");
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     srt_close(socket);  // the listener has done its job
     socket = accepted;
