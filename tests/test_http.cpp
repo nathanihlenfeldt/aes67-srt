@@ -294,6 +294,75 @@ TEST_CASE(http_the_config_is_restart_aware_and_persisted) {
   std::remove(path.c_str());
 }
 
+TEST_CASE(http_the_aes67_panel_reads_the_daemon_and_wires_sinks) {
+  // The daemon window: what we publish, what we subscribed, and what it discovered.
+  // The fake answers with the two senders the measured network actually announces,
+  // so a subscription built here is built against the real shape.
+  Config config = http_config(18216, "loopback");
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+  auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
+
+  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
+  CHECK(server.start(&error));
+  httplib::Client client("127.0.0.1", config.http_port);
+  CHECK(get_retrying(&client, "/api/status"));
+
+  httplib::Result status = get_retrying(&client, "/api/aes67/status");
+  CHECK(status);
+  CHECK_EQ(status->status, 200);
+  nlohmann::json panel = nlohmann::json::parse(status->body);
+  CHECK_EQ(panel["reachable"].get<bool>(), true);
+  CHECK_EQ(panel["ptp"]["status"].get<std::string>(), std::string("locked"));
+  CHECK_EQ(panel["sources"].size(), static_cast<size_t>(0));
+  CHECK_EQ(panel["sinks"].size(), static_cast<size_t>(0));
+  CHECK(panel["discovered"].size() >= 2);
+  bool found_tx1 = false;
+  for (const nlohmann::json& entry : panel["discovered"]) {
+    if (entry["name"].get<std::string>() == "AES67-TX-1") {
+      found_tx1 = true;
+    }
+  }
+  CHECK(found_tx1);
+
+  // Publish: one source per block.
+  httplib::Result published = client.Post("/api/aes67/publish");
+  CHECK(published);
+  CHECK_EQ(published->status, 200);
+  panel = nlohmann::json::parse(get_retrying(&client, "/api/aes67/status")->body);
+  CHECK_EQ(panel["sources"].size(), static_cast<size_t>(1));
+
+  // Subscribe a block's sink to a discovered sender, and see it receiving.
+  httplib::Result subscribe = post_json(&client, "/api/aes67/subscribe",
+                                        R"({"block":0,"source":"AES67-TX-1"})");
+  CHECK(subscribe);
+  CHECK_EQ(subscribe->status, 200);
+  panel = nlohmann::json::parse(get_retrying(&client, "/api/aes67/status")->body);
+  CHECK_EQ(panel["sinks"].size(), static_cast<size_t>(1));
+  CHECK_EQ(panel["sinks"][0]["receiving"].get<bool>(), true);
+
+  // An unknown name and a block that does not exist are refused, naming the field.
+  httplib::Result no_source =
+      post_json(&client, "/api/aes67/subscribe", R"({"block":0,"source":"nope"})");
+  CHECK_EQ(no_source->status, 400);
+  CHECK(no_source->body.find("nothing discovered") != std::string::npos);
+  httplib::Result no_block = post_json(&client, "/api/aes67/subscribe",
+                                       R"({"block":5,"source":"AES67-TX-1"})");
+  CHECK_EQ(no_block->status, 400);
+  CHECK(no_block->body.find("block") != std::string::npos);
+
+  // Unsubscribe returns the sink to nothing.
+  httplib::Result removed =
+      post_json(&client, "/api/aes67/unsubscribe", R"({"block":0})");
+  CHECK(removed);
+  CHECK_EQ(removed->status, 200);
+  panel = nlohmann::json::parse(get_retrying(&client, "/api/aes67/status")->body);
+  CHECK_EQ(panel["sinks"].size(), static_cast<size_t>(0));
+
+  server.stop();
+}
+
 TEST_CASE(http_version_and_log_endpoints_answer) {
   Config config = http_config(18213, "loopback");
   Engine engine;

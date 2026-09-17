@@ -147,6 +147,11 @@ const char* k_fallback_page = R"HTML(<!doctype html>
  .form .actions { grid-column:1 / -1; display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }
  .banner { border-radius:var(--radius); padding:.65rem .9rem; font-weight:500; }
  .banner.bad { background:var(--bad-bg); color:var(--bad); }
+ .sub { font-size:.9rem; margin:.5rem 0 .2rem; }
+ .sub:first-child { margin-top:0; }
+ .mini { padding:.1rem .5rem; font-size:.82rem; }
+ .list { display:flex; flex-wrap:wrap; gap:.4rem; }
+ .tag { border:1px solid var(--border); border-radius:999px; padding:.1rem .55rem; font-size:.82rem; }
  footer { max-width:64rem; margin:0 auto; padding:0 1.25rem 2rem; color:var(--muted); font-size:.8rem; }
 </style>
 </head>
@@ -191,6 +196,21 @@ const char* k_fallback_page = R"HTML(<!doctype html>
         <span class="msg" id="configmsg" role="status"></span>
       </div>
     </form>
+  </section>
+  <section class="card wide">
+    <h2>AES67 daemon</h2>
+    <div id="aes67"><span class="msg">loading&hellip;</span></div>
+    <div class="controls" style="margin-top:.8rem">
+      <label for="a_block">Block</label>
+      <input id="a_block" type="number" min="0" value="0" style="width:4rem">
+      <label for="a_source">to</label>
+      <input id="a_source" list="discovered" placeholder="discovered name or self">
+      <datalist id="discovered"></datalist>
+      <button id="subscribe" type="button">Subscribe sink</button>
+      <button id="unsubscribe" type="button">Unsubscribe</button>
+      <button id="publish" type="button">Publish sources</button>
+      <span class="msg" id="aes67msg" role="status"></span>
+    </div>
   </section>
 </main>
 <footer>Configuration is validated before it is written; a field that needs a restart says so.</footer>
@@ -293,9 +313,65 @@ $('savelink').onclick = async () => {
     : 'saved to ' + res.path;
 };
 
+async function loadAes67() {
+  const root = $('aes67');
+  try {
+    const a = await (await fetch('/api/aes67/status')).json();
+    if (!a.reachable) {
+      root.innerHTML = '<p class="msg bad">daemon unreachable' + (a.error ? ': ' + a.error : '') + '</p>';
+      $('discovered').innerHTML = '';
+      return;
+    }
+    const sources = a.sources || [], sinks = a.sinks || [], discovered = a.discovered || [];
+    let html = '';
+    html += '<div class="sub">' + sources.length + ' sources published</div>';
+    html += sources.length
+      ? '<div class="list">' + sources.map((s) => '<span class="tag">' + (s.name || ('source ' + s.id)) + '</span>').join('') + '</div>'
+      : '<p class="msg">none</p>';
+    html += '<div class="sub">' + sinks.length + ' sinks subscribed</div>';
+    html += sinks.length
+      ? sinks.map((s) => '<div class="row"><span class="name">block ' + s.id + '</span><span class="pill ' +
+          (s.receiving ? 'ok' : 'bad') + '">' + (s.receiving ? 'receiving' : (s.in_use ? 'no RTP' : 'no stream')) +
+          '</span><span class="detail"></span></div>').join('')
+      : '<p class="msg">none</p>';
+    html += '<div class="sub">' + discovered.length + ' discovered</div>';
+    html += discovered.length
+      ? discovered.map((d) => '<div class="row"><span class="name">' + (d.name || '(unnamed)') +
+          '</span><span class="detail">' + (d.address || '') + '</span>' +
+          '<button class="mini" type="button" onclick="subscribeTo(this.dataset.name)" data-name="' +
+          (d.name || '') + '">use</button></div>').join('')
+      : '<p class="msg">none</p>';
+    root.innerHTML = html;
+    $('discovered').innerHTML = discovered.map((d) => '<option value="' + (d.name || '') + '">').join('');
+  } catch (e) {
+    root.innerHTML = '<p class="msg bad">' + e + '</p>';
+  }
+}
+function subscribeTo(name) { $('a_source').value = name; }
+async function aes67Action(path, body, oktext) {
+  const m = $('aes67msg');
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  m.className = r.ok ? 'msg ok' : 'msg bad';
+  m.textContent = r.ok ? oktext : await r.text();
+  loadAes67();
+}
+$('subscribe').onclick = () => aes67Action('/api/aes67/subscribe',
+  { block: parseInt($('a_block').value, 10), source: $('a_source').value }, 'sink subscribed');
+$('unsubscribe').onclick = () => aes67Action('/api/aes67/unsubscribe',
+  { block: parseInt($('a_block').value, 10) }, 'sink removed');
+$('publish').onclick = async () => {
+  const m = $('aes67msg');
+  const r = await fetch('/api/aes67/publish', { method: 'POST' });
+  m.className = r.ok ? 'msg ok' : 'msg bad';
+  m.textContent = r.ok ? 'sources published' : await r.text();
+  loadAes67();
+};
+
 poll();
 setInterval(poll, 1000);
 loadConfig();
+loadAes67();
+setInterval(loadAes67, 5000);
 </script>
 </body>
 </html>
@@ -533,6 +609,201 @@ void ApiServer::register_routes() {
                           {"applied", applied},
                           {"restart_required", restart},
                           {"path", config_path_}});
+  });
+
+  // ---- AES67: sources, sinks and what is on the wire (ticket 14) ---------
+  // The daemon owns discovery, subscription and PTP (decision 11); this is the
+  // window onto it. Sources are ours, one per block; sinks are what we subscribed;
+  // `discovered` is what the daemon heard on the network, with the SDP a sink
+  // needs.
+  svr->Get("/api/aes67/status", [this](const httplib::Request&,
+                                       httplib::Response& response) {
+    nlohmann::json out;
+    out["endpoint"] = daemon_ != nullptr ? daemon_->endpoint() : "";
+    if (daemon_ == nullptr) {
+      reply_json(response, out);
+      return;
+    }
+    std::lock_guard<std::mutex> lock(daemon_mutex_);
+    std::string error;
+    daemon::PtpStatus ptp;
+    out["reachable"] = daemon_->get_ptp_status(&ptp, &error);
+    if (out["reachable"].get<bool>()) {
+      out["ptp"] = {
+          {"status", ptp.status}, {"gmid", ptp.gmid}, {"jitter", ptp.jitter}};
+    } else {
+      out["error"] = error;
+    }
+
+    nlohmann::json sources = nlohmann::json::array();
+    daemon::json raw_sources;
+    if (daemon_->get_sources(&raw_sources, &error) &&
+        raw_sources.contains("sources")) {
+      for (const daemon::json& entry : raw_sources["sources"]) {
+        sources.push_back({{"id", entry.value("id", -1)},
+                           {"name", entry.value("name", std::string())},
+                           {"codec", entry.value("codec", std::string())}});
+      }
+    }
+    out["sources"] = sources;
+
+    nlohmann::json sinks = nlohmann::json::array();
+    daemon::json raw_sinks;
+    if (daemon_->get_sinks(&raw_sinks, &error) && raw_sinks.contains("sinks")) {
+      for (const daemon::json& entry : raw_sinks["sinks"]) {
+        const int id = entry.value("id", -1);
+        daemon::SinkStatus status;
+        const bool known = daemon_->get_sink_status(id, &status, &error);
+        sinks.push_back({{"id", id},
+                         {"in_use", known && status.in_use},
+                         {"receiving", known && status.receiving_rtp_packet}});
+      }
+    }
+    out["sinks"] = sinks;
+
+    nlohmann::json discovered = nlohmann::json::array();
+    daemon::json raw_discovered;
+    if (daemon_->browse_sources("all", &raw_discovered, &error) &&
+        raw_discovered.contains("remote_sources")) {
+      for (const daemon::json& entry : raw_discovered["remote_sources"]) {
+        discovered.push_back({{"name", entry.value("name", std::string())},
+                              {"address", entry.value("address", std::string())},
+                              {"id", entry.value("id", std::string())},
+                              {"sdp", entry.value("sdp", std::string())}});
+      }
+    }
+    out["discovered"] = discovered;
+    reply_json(response, out);
+  });
+
+  // Subscribe one block's sink to a discovered announcement, or to our own source
+  // ("self"). This is the per-site mapping the operator owns, and it is the same
+  // `make_block_sink` the commissioning path uses, so the two cannot drift.
+  svr->Post("/api/aes67/subscribe", [this](const httplib::Request& request,
+                                           httplib::Response& response) {
+    if (daemon_ == nullptr) {
+      reply_text(response, 503, "no daemon client");
+      return;
+    }
+    std::string error;
+    const nlohmann::json body = parse_body(request, &error);
+    if (!error.empty()) {
+      reply_text(response, 400, error);
+      return;
+    }
+    if (!body.contains("block") || !body["block"].is_number_integer()) {
+      reply_text(response, 400, "block: expected a block index");
+      return;
+    }
+    const std::string source = body.value("source", std::string());
+    if (source.empty()) {
+      reply_text(response, 400, "source: expected a discovered name, or \"self\"");
+      return;
+    }
+    const Config config = config_snapshot();
+    const int block_index = body["block"].get<int>();
+    if (block_index < 0 || block_index >= static_cast<int>(config.blocks.size())) {
+      reply_text(response, 400,
+                 "block: expected 0.." + std::to_string(config.blocks.size() - 1));
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(daemon_mutex_);
+    std::string sdp;
+    if (source == "self") {
+      if (!daemon_->get_source_sdp(block_index, &sdp, &error)) {
+        reply_text(response, 502, error);
+        return;
+      }
+    } else {
+      daemon::json discovered;
+      if (!daemon_->browse_sources("all", &discovered, &error)) {
+        reply_text(response, 502, error);
+        return;
+      }
+      const daemon::json list =
+          discovered.value("remote_sources", daemon::json::array());
+      for (const daemon::json& entry : list) {
+        if (entry.value("name", std::string()) == source) {
+          sdp = entry.value("sdp", std::string());
+          break;
+        }
+      }
+      if (sdp.empty()) {
+        reply_text(response, 400,
+                   "source: nothing discovered is named \"" + source + "\"");
+        return;
+      }
+    }
+    if (sdp.empty()) {
+      reply_text(response, 400, "source: \"" + source + "\" announces no SDP");
+      return;
+    }
+
+    daemon::json sink;
+    if (!daemon::make_block_sink(config.blocks[block_index], sdp, &sink, &error)) {
+      reply_text(response, 400, error);
+      return;
+    }
+    if (!daemon_->put_sink(block_index, sink, &error)) {
+      reply_text(response, 502, error);
+      return;
+    }
+    log().write(LogLevel::info, "control: subscribed block " +
+                                    std::to_string(block_index) + " to \"" +
+                                    source + "\"");
+    reply_json(response,
+               {{"ok", true}, {"block", block_index}, {"source", source}});
+  });
+
+  svr->Post("/api/aes67/unsubscribe",
+            [this](const httplib::Request& request, httplib::Response& response) {
+              if (daemon_ == nullptr) {
+                reply_text(response, 503, "no daemon client");
+                return;
+              }
+              std::string error;
+              const nlohmann::json body = parse_body(request, &error);
+              if (!body.contains("block") || !body["block"].is_number_integer()) {
+                reply_text(response, 400, "block: expected a block index");
+                return;
+              }
+              const int block_index = body["block"].get<int>();
+              std::lock_guard<std::mutex> lock(daemon_mutex_);
+              if (!daemon_->delete_sink(block_index, &error)) {
+                reply_text(response, 502, error);
+                return;
+              }
+              log().write(LogLevel::info, "control: unsubscribed block " +
+                                              std::to_string(block_index));
+              reply_json(response, {{"ok", true}, {"block", block_index}});
+            });
+
+  // (Re)publish one source per block. Commissioning does this at start; the button
+  // exists for a daemon that was restarted underneath a running appliance, which
+  // forgets everything it was told.
+  svr->Post("/api/aes67/publish", [this](const httplib::Request&,
+                                         httplib::Response& response) {
+    if (daemon_ == nullptr) {
+      reply_text(response, 503, "no daemon client");
+      return;
+    }
+    const Config config = config_snapshot();
+    std::lock_guard<std::mutex> lock(daemon_mutex_);
+    std::string error;
+    size_t published = 0;
+    for (size_t index = 0; index < config.blocks.size(); ++index) {
+      if (!daemon_->put_source(
+              static_cast<int>(index),
+              daemon::make_block_source(config, config.blocks[index]), &error)) {
+        reply_text(response, 502, error);
+        return;
+      }
+      ++published;
+    }
+    log().write(LogLevel::info,
+                "control: published " + std::to_string(published) + " sources");
+    reply_json(response, {{"ok", true}, {"sources", published}});
   });
 
   // ---- A/V alignment, live (ticket 14, issue #15) ------------------------
