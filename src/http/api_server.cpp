@@ -2,6 +2,7 @@
 
 #include <sys/stat.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -54,6 +55,34 @@ nlohmann::json parse_body(const httplib::Request& request, std::string* error) {
 }
 
 /**
+ * Write a configuration file by replace, not by truncate.
+ *
+ * A half-written file is an appliance that will not start, so the new document
+ * goes to a sibling and a rename (atomic within a filesystem) puts it in place.
+ */
+bool write_atomically(const std::string& path, const std::string& text,
+                      std::string* error) {
+  const std::string temporary = path + ".tmp";
+  {
+    std::ofstream out(temporary, std::ios::trunc);
+    if (!out.is_open()) {
+      *error = "cannot write " + temporary;
+      return false;
+    }
+    out << text;
+    if (!out.good()) {
+      *error = "error writing " + temporary;
+      return false;
+    }
+  }
+  if (std::rename(temporary.c_str(), path.c_str()) != 0) {
+    *error = "cannot replace " + path;
+    return false;
+  }
+  return true;
+}
+
+/**
  * The page served until the built web UI exists.
  *
  * It is not a placeholder that says "not implemented": it polls `/api/status` and
@@ -79,6 +108,10 @@ const char* k_fallback_page = R"HTML(<!doctype html>
  .controls { margin: 1rem 0 2rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
  .controls input { width: 6rem; padding: .2rem .3rem; }
  #controlmsg { color: #666; }
+ h2 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
+ .config label { display: inline-block; margin: 0 1rem .6rem 0; }
+ .config input, .config select { padding: .15rem .3rem; }
+ #configmsg, #controlmsg { color: #666; }
  code { background: #f4f4f4; padding: .1rem .3rem; border-radius: 3px; }
 </style>
 </head>
@@ -92,7 +125,62 @@ const char* k_fallback_page = R"HTML(<!doctype html>
   <button onclick="triggerTestSignal()">Trigger test signal</button>
   <span id="controlmsg"></span>
 </div>
+<h2>SRT link</h2>
+<form class="config" onsubmit="return false;">
+  <label>mode <select id="c_mode"><option>caller</option><option>listener</option><option>rendezvous</option><option>loopback</option></select></label>
+  <label>role <select id="c_role"><option>tx</option><option>rx</option><option>duplex</option></select></label>
+  <label>peer <input id="c_peer" size="16" placeholder="host:port"></label>
+  <label>local port <input id="c_local_port" type="number" size="6"></label>
+  <label>latency (ms) <input id="c_latency_ms" type="number" size="6"></label>
+  <label>blocks <input id="c_blocks" type="number" min="1" max="8" size="2"></label>
+  <label>passphrase <input id="c_passphrase" type="password" size="12"></label>
+  <button onclick="saveLink()">Save SRT settings</button>
+  <span id="configmsg"></span>
+</form>
 <script>
+let currentConfig = null;
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    currentConfig = await r.json();
+    const l = currentConfig.link;
+    document.getElementById('c_mode').value = l.mode;
+    document.getElementById('c_role').value = l.role;
+    document.getElementById('c_peer').value = l.peer || '';
+    document.getElementById('c_local_port').value = l.local_port;
+    document.getElementById('c_latency_ms').value = l.latency_ms;
+    document.getElementById('c_blocks').value = l.blocks;
+    document.getElementById('c_passphrase').value = l.passphrase || '';
+  } catch (e) { /* the status poll already reports an unreachable appliance */ }
+}
+async function saveLink() {
+  if (!currentConfig) { await loadConfig(); }
+  if (!currentConfig) return;
+  const num = (id) => parseInt(document.getElementById(id).value, 10);
+  currentConfig.link.mode = document.getElementById('c_mode').value;
+  currentConfig.link.role = document.getElementById('c_role').value;
+  currentConfig.link.peer = document.getElementById('c_peer').value;
+  currentConfig.link.local_port = num('c_local_port');
+  currentConfig.link.latency_ms = num('c_latency_ms');
+  currentConfig.link.blocks = num('c_blocks');
+  currentConfig.link.passphrase = document.getElementById('c_passphrase').value;
+  const msg = document.getElementById('configmsg');
+  const r = await fetch('/api/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(currentConfig)
+  });
+  if (!r.ok) {
+    msg.className = 'bad';
+    msg.textContent = await r.text();
+    return;
+  }
+  const res = await r.json();
+  const restart = res.restart_required || [];
+  msg.className = restart.length ? 'bad' : 'ok';
+  msg.textContent = restart.length
+    ? 'saved to ' + res.path + ' -- restart the appliance to apply: ' + restart.join(', ')
+    : 'saved to ' + res.path;
+}
 async function setDelay() {
   const value = parseFloat(document.getElementById('delay').value);
   const r = await fetch('/api/egress/delay', {
@@ -135,6 +223,10 @@ async function poll() {
     if (!p.ok) {
       html = '<p class="bad">Preflight failed: audio will not flow until the checks below pass.</p>' + html;
     }
+    if (s.pending_restart && s.pending_restart.length) {
+      html = '<p class="bad">Configuration saved, waiting for a restart: ' +
+        s.pending_restart.join(', ') + '</p>' + html;
+    }
     document.getElementById('root').innerHTML = html;
   } catch (e) {
     document.getElementById('root').textContent = 'cannot reach the appliance: ' + e;
@@ -142,6 +234,7 @@ async function poll() {
 }
 poll();
 setInterval(poll, 1000);
+loadConfig();
 </script>
 </body>
 </html>
@@ -150,19 +243,26 @@ setInterval(poll, 1000);
 }  // namespace
 
 ApiServer::ApiServer(Config* config, Engine* engine, daemon::DaemonClient* daemon,
-                     std::string webui_dir)
+                     std::string webui_dir, std::string config_path)
     : config_(config),
       engine_(engine),
       daemon_(daemon),
-      webui_dir_(std::move(webui_dir)) {}
+      webui_dir_(std::move(webui_dir)),
+      config_path_(std::move(config_path)) {}
 
 ApiServer::~ApiServer() {
   stop();
 }
 
+Config ApiServer::config_snapshot() {
+  std::lock_guard<std::mutex> lock(config_mutex_);
+  return config_ != nullptr ? *config_ : Config{};
+}
+
 nlohmann::json ApiServer::build_preflight() {
   const EngineStatus status =
       engine_ != nullptr ? engine_->status() : EngineStatus{};
+  const Config config = config_snapshot();
 
   daemon::PtpStatus ptp;
   std::string daemon_error;
@@ -195,13 +295,10 @@ nlohmann::json ApiServer::build_preflight() {
                     {"detail", engine_ != nullptr && engine_->backend() != nullptr
                                    ? engine_->backend()->detail()
                                    : std::string("no audio backend")}});
-  checks.push_back(
-      {{"name", "link"},
-       {"ok", link_open},
-       {"detail", link_open ? (config_ != nullptr
-                                   ? config_->link.mode + " " + config_->link.role
-                                   : std::string("open"))
-                            : std::string("not open")}});
+  checks.push_back({{"name", "link"},
+                    {"ok", link_open},
+                    {"detail", link_open ? config.link.mode + " " + config.link.role
+                                         : std::string("not open")}});
 
   const bool ok = ptp_locked && daemon_ok && device_open && link_open;
   return {{"ok", ok}, {"delay_ms", status.delay_ms}, {"checks", checks}};
@@ -242,16 +339,22 @@ nlohmann::json ApiServer::build_status() {
     link["packets_dropped"] = stats.packets_dropped;
   }
 
+  const Config config = config_snapshot();
   nlohmann::json document;
   document["name"] = "aes67-srt";
   document["version"] = version_string();
   document["build"] = build_info();
-  if (config_ != nullptr) {
-    document["role"] = config_->link.role;
-    document["mode"] = config_->link.mode;
-    document["peer"] = config_->link.peer;
-    document["blocks"] = config_->blocks.size();
-    document["channels"] = config_->audio.channels;
+  document["role"] = config.link.role;
+  document["mode"] = config.link.mode;
+  document["peer"] = config.link.peer;
+  document["blocks"] = config.blocks.size();
+  document["channels"] = config.audio.channels;
+  {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    // A configuration POST that needs a restart says so here, rather than the
+    // change appearing to have taken effect.
+    document["pending_restart"] = pending_restart_;
+    document["config_path"] = config_path_;
   }
   document["preflight"] = build_preflight();
   document["engine"] = engine;
@@ -285,6 +388,91 @@ void ApiServer::register_routes() {
         }
         reply_json(response, {{"lines", log().tail(static_cast<size_t>(lines))}});
       });
+
+  // ---- configuration (ticket 14, issue #15) ------------------------------
+  // The running document, and a whole-document replace. A change is validated
+  // before anything is written or applied, and a field that only takes effect on a
+  // restart is reported rather than silently deferred.
+  svr->Get(
+      "/api/config", [this](const httplib::Request&, httplib::Response& response) {
+        reply_json(response, nlohmann::json::parse(config_snapshot().to_json()));
+      });
+
+  svr->Post("/api/config", [this](const httplib::Request& request,
+                                  httplib::Response& response) {
+    if (config_ == nullptr) {
+      reply_text(response, 503, "no configuration");
+      return;
+    }
+    // Validate the whole document first: a refusal names the offending
+    // field and changes nothing.
+    Config parsed;
+    std::string reason;
+    if (!parse_config(request.body, &parsed, &reason)) {
+      reply_text(response, 400, reason);
+      return;
+    }
+
+    const Config running = config_snapshot();
+    const nlohmann::json wanted = nlohmann::json::parse(parsed.to_json());
+    const nlohmann::json current = nlohmann::json::parse(running.to_json());
+
+    std::vector<std::string> applied;
+    std::vector<std::string> restart;
+    static const char* k_sections[] = {"audio",    "link",   "aes67_daemon",
+                                       "egress",   "blocks", "http_addr",
+                                       "http_port"};
+    for (const char* section : k_sections) {
+      if (!wanted.contains(section) || !current.contains(section)) {
+        continue;
+      }
+      if (wanted[section] == current[section]) {
+        continue;
+      }
+      if (std::string(section) == "egress" &&
+          parsed.egress.test_signal_channel == running.egress.test_signal_channel) {
+        // Only the A/V offset moved, and that one is live.
+        applied.push_back("egress.delay_ms");
+        continue;
+      }
+      restart.push_back(section);
+    }
+
+    // Apply the live field before writing, so a value the engine refuses
+    // never reaches the file. The running config takes the new offset so
+    // that file and running state agree on the field that did apply.
+    if (!applied.empty()) {
+      if (engine_ == nullptr ||
+          !engine_->set_egress_delay_ms(parsed.egress.delay_ms, &reason)) {
+        reply_text(response, 400, reason);
+        return;
+      }
+    }
+
+    if (!config_path_.empty()) {
+      if (!write_atomically(config_path_, parsed.to_json(), &reason)) {
+        reply_text(response, 500, reason);
+        return;
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(config_mutex_);
+      if (!applied.empty()) {
+        config_->egress.delay_ms = parsed.egress.delay_ms;
+      }
+      pending_restart_ = restart;
+    }
+    log().write(LogLevel::info,
+                "control: configuration saved" +
+                    (restart.empty() ? std::string()
+                                     : " (" + std::to_string(restart.size()) +
+                                           " section(s) need a restart)"));
+    reply_json(response, {{"ok", true},
+                          {"applied", applied},
+                          {"restart_required", restart},
+                          {"path", config_path_}});
+  });
 
   // ---- A/V alignment, live (ticket 14, issue #15) ------------------------
   // The offset moves while audio runs, through the delay line's crossfade, and the

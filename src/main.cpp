@@ -102,6 +102,7 @@ int main(int argc, char** argv) {
 
   aes67_srt::App app;
   app.configure(config);
+  app.set_config_path(config_path);
   app.set_fake(fake);
   // "self" is the one name that is not an announcement: it means this appliance's
   // own source, i.e. the commissioning loopback the spec asks for.

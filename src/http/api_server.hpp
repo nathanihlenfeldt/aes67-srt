@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -47,7 +48,7 @@ class DaemonClient;
 class ApiServer {
  public:
   ApiServer(Config* config, Engine* engine, daemon::DaemonClient* daemon,
-            std::string webui_dir);
+            std::string webui_dir, std::string config_path);
   ~ApiServer();
 
   ApiServer(const ApiServer&) = delete;
@@ -69,10 +70,22 @@ class ApiServer {
  private:
   void register_routes();
 
+  /** A copy of the running configuration, taken under the lock. */
+  Config config_snapshot();
+
   Config* config_{nullptr};
   Engine* engine_{nullptr};
   daemon::DaemonClient* daemon_{nullptr};
   std::string webui_dir_;
+  /** Where a configuration POST is written. Empty means "do not persist". */
+  std::string config_path_;
+  /**
+   * Fields changed by a POST that only take effect on a restart. Kept so the page
+   * can say so instead of the change appearing to have landed.
+   */
+  std::vector<std::string> pending_restart_;
+  /** Guards `config_` and `pending_restart_`: HTTP worker threads share them. */
+  std::mutex config_mutex_;
   /** Serialises the daemon, which is not safe to drive from two HTTP threads. */
   std::mutex daemon_mutex_;
   std::unique_ptr<httplib::Server> server_;

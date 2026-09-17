@@ -27,6 +27,13 @@ class App {
   /** Keep a configuration that has already been validated. */
   void configure(const Config& config);
 
+  /**
+   * Where the configuration came from, so a change from the control surface can be
+   * written back. Empty means "do not persist": a change is then refused rather
+   * than applied and lost on the next start.
+   */
+  void set_config_path(const std::string& path);
+
   const Config& config() const;
 
   /** True when the backend and daemon are faked, so nothing touches hardware. */
@@ -81,6 +88,7 @@ class App {
   void apply_fake();
 
   Config config_;
+  std::string config_path_;
   bool fake_ = false;
   Subscription subscription_ = Subscription::none;
   std::string subscribe_to_;

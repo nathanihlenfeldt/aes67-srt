@@ -28,6 +28,10 @@ void App::configure(const Config& config) {
   config_ = config;
 }
 
+void App::set_config_path(const std::string& path) {
+  config_path_ = path;
+}
+
 const Config& App::config() const {
   return config_;
 }
@@ -153,7 +157,7 @@ int App::run() {
   // runs. A port that will not bind is a warning rather than a failure: audio is
   // the point, and a second instance's collision should not take down a working
   // link just because it cannot also have the status page.
-  ApiServer control(&config_, &engine, daemon.get(), std::string());
+  ApiServer control(&config_, &engine, daemon.get(), std::string(), config_path_);
   if (!control.start(&error)) {
     log().write(LogLevel::warn,
                 error + " (continuing without the control surface)");

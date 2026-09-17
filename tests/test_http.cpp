@@ -8,6 +8,9 @@
 #include "http/api_server.hpp"
 
 #include <chrono>
+#include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -67,7 +70,7 @@ TEST_CASE(http_status_carries_the_engine_figures_and_the_preflight) {
   CHECK(engine.open(&error));
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui");
+  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
   CHECK(server.start(&error));
 
   httplib::Client client("127.0.0.1", config.http_port);
@@ -112,7 +115,7 @@ TEST_CASE(http_status_says_exactly_what_is_wrong_with_no_daemon_and_no_link) {
   // Deliberately not opened: no device, no link.
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui");
+  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
   CHECK(server.start(&error));
 
   httplib::Client client("127.0.0.1", config.http_port);
@@ -172,7 +175,7 @@ TEST_CASE(http_the_av_delay_is_adjustable_live_and_refused_when_impossible) {
   CHECK(engine.open(&error));
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui");
+  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
   CHECK(server.start(&error));
   httplib::Client client("127.0.0.1", config.http_port);
   // Warm the server up so the POST below is not racing its accept thread.
@@ -213,6 +216,84 @@ TEST_CASE(http_the_av_delay_is_adjustable_live_and_refused_when_impossible) {
   engine.stop();
 }
 
+TEST_CASE(http_the_config_is_restart_aware_and_persisted) {
+  // The configuration from the browser: validated before it is written, persisted
+  // to the file it came from, and honest about what only takes effect on a restart.
+  const std::string path = "/tmp/aes67-srt-http-config-test.json";
+  std::remove(path.c_str());
+
+  Config config = http_config(18215, "loopback");
+  {
+    std::ofstream out(path, std::ios::trunc);
+    out << config.to_json();
+  }
+
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+  CHECK(engine.open(&error));
+  auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
+
+  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", path);
+  CHECK(server.start(&error));
+  httplib::Client client("127.0.0.1", config.http_port);
+  CHECK(get_retrying(&client, "/api/status"));
+
+  // The running document, with the SRT fields the page will edit.
+  httplib::Result got = get_retrying(&client, "/api/config");
+  CHECK(got);
+  CHECK_EQ(got->status, 200);
+  nlohmann::json document = nlohmann::json::parse(got->body);
+  CHECK_EQ(document["link"]["mode"].get<std::string>(), std::string("loopback"));
+  CHECK(document["link"].contains("latency_ms"));
+  CHECK(document["link"].contains("peer"));
+
+  // A restart-only change: persisted, and reported as needing a restart.
+  document["link"]["latency_ms"] = 200;
+  httplib::Result saved = post_json(&client, "/api/config", document.dump());
+  CHECK(saved);
+  CHECK_EQ(saved->status, 200);
+  nlohmann::json saved_body = nlohmann::json::parse(saved->body);
+  CHECK_EQ(saved_body["restart_required"].size(), static_cast<size_t>(1));
+  CHECK_EQ(saved_body["restart_required"][0].get<std::string>(),
+           std::string("link"));
+  {
+    std::ifstream in(path);
+    std::stringstream text;
+    text << in.rdbuf();
+    CHECK_EQ(nlohmann::json::parse(text.str())["link"]["latency_ms"].get<int>(),
+             200);
+  }
+
+  // A live change: the offset only, applied now and needing no restart.
+  document["link"]["latency_ms"] = 120;
+  document["egress"]["delay_ms"] = 33.0;
+  httplib::Result live = post_json(&client, "/api/config", document.dump());
+  CHECK(live);
+  CHECK_EQ(live->status, 200);
+  nlohmann::json live_body = nlohmann::json::parse(live->body);
+  CHECK_EQ(live_body["restart_required"].size(), static_cast<size_t>(0));
+  CHECK_EQ(live_body["applied"].size(), static_cast<size_t>(1));
+  CHECK_NEAR(engine.egress_delay_ms(), 33.0, 0.05);
+
+  // An impossible document is refused naming the field, and changes nothing.
+  document["link"]["latency_ms"] = 0;
+  httplib::Result impossible = post_json(&client, "/api/config", document.dump());
+  CHECK_EQ(impossible->status, 400);
+  CHECK(impossible->body.find("latency_ms") != std::string::npos);
+
+  // An unknown key is an error, not something silently ignored.
+  document["link"]["latency_ms"] = 120;
+  document["link"]["nonsense"] = 1;
+  httplib::Result unknown = post_json(&client, "/api/config", document.dump());
+  CHECK_EQ(unknown->status, 400);
+  CHECK(unknown->body.find("nonsense") != std::string::npos);
+
+  server.stop();
+  engine.stop();
+  std::remove(path.c_str());
+}
+
 TEST_CASE(http_version_and_log_endpoints_answer) {
   Config config = http_config(18213, "loopback");
   Engine engine;
@@ -220,7 +301,7 @@ TEST_CASE(http_version_and_log_endpoints_answer) {
   CHECK(engine.prepare(config, &error));
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui");
+  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
   CHECK(server.start(&error));
 
   httplib::Client client("127.0.0.1", config.http_port);
