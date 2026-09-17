@@ -4,6 +4,7 @@ add_executable(aes67-srt-tests
   test_app.cpp
   test_audio.cpp
   test_clock_drift.cpp
+  test_clock_playout.cpp
   test_commissioning.cpp
   test_config.cpp
   test_daemon.cpp

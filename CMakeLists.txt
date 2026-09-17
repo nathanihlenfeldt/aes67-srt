@@ -175,6 +175,7 @@ set(AES67_SRT_SOURCES
   src/app.cpp
   src/audio/backend.cpp
   src/audio/null_backend.cpp
+  src/clock/playout_buffer.cpp
   src/commissioning.cpp
   src/config.cpp
   src/engine.cpp

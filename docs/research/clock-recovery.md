@@ -109,7 +109,8 @@ the best of three runs.
   two appliances exist on a real link.
 - **Where the drift budget sits relative to the 120 ms latency**: whether corrections happen
   continuously or inside a bounded window, and what happens to the figure the operator is shown
-  while they do.
+  while they do. **Increment 1 narrowed this**: the level is quantised to a whole period, so a 1 ppm
+  offset takes 1000 s to become visible in it. See "Increment 1, the playout buffer, measured" below.
 
 ## How the ratio is obtained, and why the first answer was wrong
 
@@ -160,3 +161,46 @@ that `wire` already guarantees by construction. So the increments became:
 **And the next hardware session gains a cheap, decisive measurement:** log the spread of frame arrival
 times at the receiver. That single number decides whether the direct estimate is viable as an
 accelerator, and it costs a line of logging rather than a session.
+
+## Increment 1, the playout buffer, measured 2026-09-17
+
+`src/clock/playout_buffer.{hpp,cpp}`, proved by `tests/test_clock_playout.cpp` on every commit. No
+hardware: this is arithmetic and a discrete simulation, and the simulation is the point — two clocks
+offset by a few ppm, hours of simulated audio, and no sample lost or duplicated. The clock module's
+test claims are met here or not at all.
+
+The simulation is integer-exact. Each end's clock advances in millionths of a millisecond, so a ppm
+offset is a whole number of units and four simulated hours accumulate no floating-point error; the
+sender's periods arrive at positions 48 frames apart, as the wire format says they do.
+
+| Run | Result |
+|---|---|
+| 120 ms buffer, sender +10 ppm, no compensation | full after **3.3333 hours**, then one 1 ms period surrendered every 100 s |
+| 150 periods of buffer, receiver +50 ppm, no compensation | dry after **0.667 hours** (the table above says 0.67) |
+| 4 hours, rates matched, 500 ms buffer | **14,400,024 periods played, 0 frames lost, 0 repeated, 0 underruns** |
+| One hour at 10 ppm against 0 / 10 against 9 / 1 against 0 | level grows **+37 ms / +5 ms / +4 ms** |
+
+**The level is the delay figure, and it is quantised to a period.** The buffer holds whole periods
+because a wire frame's eight blocks share one sample position, so the level moves in whole
+milliseconds: at 1 ppm it moves one period per **1000 seconds**. The drift is therefore invisible to
+the level over short windows and only integrates in over hundreds of seconds — which is exactly what
+a control loop on the level is, and part of why the increment order puts the ratio control after the
+buffer rather than before it. **A loop on the level cannot correct a 1 ppm offset in seconds; it
+corrects it in the time it takes the level to show it.** Where that lands relative to the 500 ms
+alarm threshold is the ratio control's question, and it now has a number to answer it with.
+
+**What the four-hour run does *not* include.** The take rate in the compensated run stands in for the
+ratio control and the resampler: increment 3 replaces that stand-in with libsamplerate, and this test
+becomes its regression test. Nothing here proves the resampler's quality or its CPU cost, and nothing
+here has touched a real device's clock — a Pi and two appliances are still what turns any of this into
+a field claim.
+
+**The one behaviour that costs audio, and its conservation law.** An overrun surrenders the oldest
+periods when the buffer is at capacity. The test asserts the equation rather than the intent: the
+frames missing from the played stream are *exactly* the frames the buffer counted as dropped, so no
+loss can hide in a miscount. A sender that jumps forwards — a link that went away and came back — is
+counted in the same way, and the head is seated at the arrival rather than part way, because a head
+that lands before an unfillable hole never plays again.
+
+**Reproduce:** `./build/tests/aes67-srt-tests` (`clock_` cases). The suite runs **104 tests**; the
+clock's 10 simulated runs cover a little over ten hours of simulated audio in about 18 seconds.
