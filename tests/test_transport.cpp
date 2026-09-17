@@ -539,18 +539,26 @@ TEST_CASE(transport_takes_strain_as_delay_and_never_drops_audio) {
 
   // Starve the link deliberately, and without root so it runs in CI on both
   // platforms. The mechanism: a receive buffer far too small to hold what the
-  // flow-control window permits. The receiver overflows, SRT notices packets
-  // missing and retransmits into the space that frees up — the same recovery path
-  // a lossy WAN exercises.
+  // flow-control window permits...
+  //
+  // ...and the sizes have to be *right*, not merely small. The first attempt at
+  // this set a receive buffer smaller than the flow-control window can fill
+  // (8 KB against a 32-packet window), and SRT does not check that: the receiver
+  // quietly overflowed, two frames of five never arrived, and the library
+  // reported neither a retransmission nor a drop. That is a way to lose audio,
+  // not a way to starve a link — and this project's whole promise is that it
+  // never loses audio. The buffer must be able to hold the whole window
+  // (32 packets x 1456 bytes is 46 KB, so 64 KB does), and then what forces the
+  // sender to stop is the *reader* being slow, not the buffer being too small.
   aes67_srt::Config listener_config =
       localhost_config("listener", listener_port, "");
-  listener_config.link.receive_buffer_bytes = 262144;
-  listener_config.link.flow_control_packets = 256;
+  listener_config.link.receive_buffer_bytes = 65536;
+  listener_config.link.flow_control_packets = 32;
 
   aes67_srt::Config caller_config = localhost_config(
       "caller", caller_port, "127.0.0.1:" + std::to_string(listener_port));
-  caller_config.link.receive_buffer_bytes = 262144;
-  caller_config.link.flow_control_packets = 256;
+  caller_config.link.receive_buffer_bytes = 65536;
+  caller_config.link.flow_control_packets = 32;
 
   Link listener;
   Link caller;
@@ -593,7 +601,8 @@ TEST_CASE(transport_takes_strain_as_delay_and_never_drops_audio) {
   std::vector<std::vector<uint8_t>> received;
   aes67_srt::wire::Reassembler reassembler;
   int peak_buffer_ms = 0;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  int64_t peak_retransmitted = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
   while (received.size() < static_cast<size_t>(frame_count) &&
          std::chrono::steady_clock::now() < deadline) {
     std::vector<uint8_t> message;
@@ -612,6 +621,11 @@ TEST_CASE(transport_takes_strain_as_delay_and_never_drops_audio) {
         }
         received.push_back(std::move(taken));
       }
+      // The consumer is deliberately slow: 20 ms per message is far below the
+      // rate the sender fills at, so the receive buffer fills, the flow-control
+      // window closes and the *sender* has to stop. That is the strain: it shows
+      // up as a stalled sender and a deeper buffer, not as loss.
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
     } else if (!timed_out) {
       test::report_failure("starved receive", __FILE__, __LINE__, receive_error);
       break;
@@ -621,9 +635,13 @@ TEST_CASE(transport_takes_strain_as_delay_and_never_drops_audio) {
     // asks for, and why it is not a yes/no test.
     LinkStats sampled;
     std::string stats_error;
-    if (listener.stats(&sampled, &stats_error) &&
-        sampled.receive_buffer_ms > peak_buffer_ms) {
-      peak_buffer_ms = sampled.receive_buffer_ms;
+    if (listener.stats(&sampled, &stats_error)) {
+      if (sampled.receive_buffer_ms > peak_buffer_ms) {
+        peak_buffer_ms = sampled.receive_buffer_ms;
+      }
+      if (sampled.packets_retransmitted > peak_retransmitted) {
+        peak_retransmitted = sampled.packets_retransmitted;
+      }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -635,7 +653,8 @@ TEST_CASE(transport_takes_strain_as_delay_and_never_drops_audio) {
 
   std::cout << "    starved link: " << received.size() << "/" << frame_count
             << " frames, peak receive buffer " << peak_buffer_ms
-            << " ms, retransmitted " << stats.packets_retransmitted << ", dropped "
+            << " ms, retransmitted " << peak_retransmitted << " peak ("
+            << stats.packets_retransmitted << " total), dropped "
             << stats.packets_dropped << std::endl;
 
   // The promise: everything arrives, and nothing was thrown away.
@@ -645,24 +664,36 @@ TEST_CASE(transport_takes_strain_as_delay_and_never_drops_audio) {
   }
   CHECK_EQ(stats.packets_dropped, static_cast<int64_t>(0));
 
-  // NO assertion here that the strain was visible, and that is a finding rather
-  // than an omission. There was one, requiring retransmissions or a queued buffer;
-  // CI failed on it. The numbers it printed, from both platforms, are the reason:
+  // NO assertion here that the strain was visible, and that is now a *measured*
+  // finding rather than an omission. The history is worth keeping because it cost
+  // two configurations to learn:
   //
-  //   macOS: peak receive buffer 1 ms, retransmitted 0, dropped 0
-  //   Linux: peak receive buffer 0 ms, retransmitted 0, dropped 0
+  //   buffer 8 KB, window 32 packets, 5 frames (the ticket's own mechanism, i.e.
+  //   a buffer smaller than the window can fill):
+  //     -> 3 of 5 frames arrived, retransmitted 0, dropped 0
+  //     8 KB cannot hold the 32-packet window, and SRT does not check that. The
+  //     receiver silently overflowed. Losing audio is not starving a link, and
+  //     nothing in the statistics said so.
   //
-  // Nothing accumulated and nothing was retransmitted on either, so a slow reader
-  // does not by itself make this link strain — SRT paces a live-mode sender to the
-  // media rate and absorbs the rest. Asserting otherwise made a red build out of
-  // something the test does not claim and cannot cause deliberately, which is worse
-  // than asserting nothing. Ticket 16 (issue #17) owns the delay-growth question,
-  // and it currently says it is unproven: the number the operator will actually see
-  // is the sender's sample position against the receiver's playout, which needs the
-  // clock module rather than this one.
+  //   buffer 64 KB, window 32 packets, 20 frames, reader pausing 20 ms/message:
+  //     -> 20 of 20 frames arrived intact, peak buffer 1 ms, retransmitted 0,
+  //        dropped 0
+  //     The buffer holds the whole window, so nothing overflows and the never-drop
+  //     promise holds under real backpressure. But the strain never became
+  //     *visible*: `msRcvBuf` is "undelivered timespan (msec) of UDT receiver"
+  //     (srt.h:382), and in live mode packets go straight into the TSBPD playout
+  //     buffer, so the UDT receiver's own buffer stays empty however hard the
+  //     reader is squeezed.
   //
-  // What this test does claim, it proves: a receiver draining slower than the
-  // sender fills receives every frame intact and drops none.
+  // So the delay the operator will actually see is not in this module's
+  // statistics: it is the sender's sample position against the receiver's
+  // playout, which needs the clock module (ticket 11). **Criterion 3 of ticket 16
+  // is not reachable from here**, and saying so with two measurements behind it is
+  // the useful result; asserting a rise that cannot happen made a red build out of
+  // something the test does not claim.
+  //
+  // What this test *does* claim, it proves, and it is the promise the whole design
+  // rests on: under backpressure, every frame arrives intact and none is dropped.
 
   // Deliberately NOT asserted, because it is not what this proves: this is
   // backpressure and induced overflow on loopback, not packet loss across a WAN.

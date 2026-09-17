@@ -442,10 +442,15 @@ bool Config::validate(std::string* reason) const {
                     std::to_string(link.receive_buffer_bytes));
   }
   if (link.flow_control_packets != 0 &&
-      (link.flow_control_packets < 2 || link.flow_control_packets > 1000000)) {
+      (link.flow_control_packets < 32 || link.flow_control_packets > 1000000)) {
+    // 32, not 2: libsrt refuses anything smaller with "SRTO_FC: minimum allowed
+    // value is 32", and a configuration the library rejects as *bad parameters*
+    // is exactly what this validator exists to refuse first, naming the field.
+    // Measured with a probe against libsrt 1.5.7; the minimum is not in the
+    // header and no document in docs/research/ recorded it.
     return fail(reason,
                 "link.flow_control_packets: expected 0 (library default) or "
-                "2..1000000, got " +
+                "32..1000000, the smallest window libsrt accepts; got " +
                     std::to_string(link.flow_control_packets));
   }
 

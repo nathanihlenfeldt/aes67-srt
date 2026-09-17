@@ -127,6 +127,27 @@ TEST_CASE(config_accepts_a_listener_with_no_peer) {
   CHECK(aes67_srt::parse_config(document.dump(), &config, &reason));
 }
 
+TEST_CASE(config_refuses_a_flow_control_window_libsrt_would_reject) {
+  // 31 is a configuration libsrt refuses with "SRTO_FC: minimum allowed value is
+  // 32", and the whole point of validating before applying is that the operator
+  // gets a sentence naming the field rather than a library's "Bad parameters"
+  // from somewhere inside the transport. Measured against libsrt 1.5.7: the
+  // floor is not in the header and no document here recorded it.
+  json document = sample_document();
+  document["link"]["flow_control_packets"] = 31;
+  const std::string reason = refusal(document);
+  CHECK(names(reason, "link.flow_control_packets"));
+  CHECK(reason.find("32") != std::string::npos);
+
+  // And the floor itself is accepted, so the boundary is where the library puts
+  // it rather than one past it.
+  document["link"]["flow_control_packets"] = 32;
+  aes67_srt::Config config;
+  std::string accepted_reason;
+  CHECK(aes67_srt::parse_config(document.dump(), &config, &accepted_reason));
+  CHECK_EQ(config.link.flow_control_packets, 32);
+}
+
 TEST_CASE(config_accepts_a_loopback_with_no_peer) {
   // The in-process loopback has no peer to name: it is this process's own byte
   // pipe, which is what lets the appliance run end to end with nothing attached.
