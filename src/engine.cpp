@@ -10,8 +10,22 @@
 namespace aes67_srt {
 namespace {
 
-/** How long a drain waits for a message before letting the loop turn over. */
-constexpr int k_receive_poll_ms = 2;
+/**
+ * How long a receive waits for a message before letting the loop turn over.
+ *
+ * **Zero, and that is non-blocking — verified, not assumed.** `SRTO_RCVTIMEO`
+ * "limits the time up to which the receiving operation will block ... The -1 value
+ * means no time limit" (Haivision SRT, `docs/API/API-socket-options.md`), so 0
+ * returns immediately with `SRT_ETIMEOUT` when nothing has arrived. It has to: this
+ * loop is paced by the device and owes it exactly one period every millisecond, and
+ * a positive timeout here is multiplied by the drain loop — up to 24 messages per
+ * frame, 8 frames per turn — which stalls the loop for tens of milliseconds. The
+ * device is then starved, the playout buffer floods and overruns, and the receiver
+ * delivers a few percent of what the sender offers. Measured on a real SRT link:
+ * **42 frames a second with a 2 ms timeout, 1000 with 0**, and the app-level
+ * loopback never blocks, so only a socket test can see the difference.
+ */
+constexpr int k_receive_poll_ms = 0;
 
 /** A direction that failed waits this long before trying again. */
 constexpr int k_retry_delay_ms = 10;
@@ -620,12 +634,10 @@ bool Engine::open(std::string* error) {
     backend_->close();
     return false;
   }
-  // Short rather than blocking: this loop has a device to feed every
-  // millisecond, and a receive that waited for the peer would turn a quiet link
-  // into a stutter. What a timeout of *zero* means to libsrt is not recorded in
-  // docs/research/libsrt.md and the installed header says only "recv()
-  // timeout", so this stays a small positive number rather than resting on an
-  // assumption about it.
+  // Non-blocking rather than short: this loop has a device to feed every
+  // millisecond, and any wait in the receive path is a wait the device pays for.
+  // See k_receive_poll_ms for why the 2 ms this used to be was not short enough,
+  // and why 0 is documented to be non-blocking rather than guessed.
   link_->set_receive_timeout_ms(k_receive_poll_ms);
 
   // The clock, built per open rather than per process: a link that is reopened is a

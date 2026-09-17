@@ -467,6 +467,53 @@ TEST_CASE(engine_refuses_a_clock_it_could_not_fill) {
   CHECK(contains(error, "playout buffer"));
 }
 
+TEST_CASE(engine_delivers_the_full_rate_over_a_real_srt_link) {
+  // The regression the in-process loopback cannot see. The receive loop is paced by
+  // the device and owes it one period a millisecond; a *blocking* receive
+  // multiplies its timeout across the drain loop and stalls that cadence, so a
+  // socket delivers a few percent of what the sender offers while the loopback,
+  // which never blocks, stays perfect. Measured on the routed path: 42 frames a
+  // second with a 2 ms timeout, 999 with 0 (docs/research/libsrt.md).
+  if (!aes67_srt::transport::Link::available() ||
+      !aes67_srt::clock::Resampler::available()) {
+    std::cout << "  no libsrt or no libsamplerate: skipping the full-rate link"
+              << std::endl;
+    return;
+  }
+
+  const Config site_config = engine_config(1, "listener", 19701);
+  const Config remote_config = engine_config(1, "caller", 19702, "127.0.0.1:19701");
+  Engine site;
+  Engine remote;
+  std::string error;
+  CHECK(site.prepare(site_config, &error));
+  CHECK(remote.prepare(remote_config, &error));
+
+  std::atomic<int> site_result{-1};
+  std::atomic<int> remote_result{-1};
+  std::thread site_thread([&site, &site_result] { site_result = site.run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::thread remote_thread(
+      [&remote, &remote_result] { remote_result = remote.run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  site.stop();
+  remote.stop();
+  site_thread.join();
+  remote_thread.join();
+
+  CHECK_EQ(site_result.load(), 0);
+  CHECK_EQ(remote_result.load(), 0);
+  // Both ends are duplex and share this machine's clock, so the receiver should get
+  // close to everything the sender sent. Half is a floor with room for start-up; a
+  // blocking receive puts this near 4%.
+  CHECK(site.frames_sent() > 500);
+  CHECK(remote.frames_received() > site.frames_sent() / 2);
+  CHECK(site.frames_received() > remote.frames_sent() / 2);
+
+  std::cout << "    engine full-rate link: site sent " << site.frames_sent()
+            << ", remote received " << remote.frames_received() << std::endl;
+}
+
 TEST_CASE(engine_says_once_that_a_loopback_has_no_link_statistics) {
   // The status thread (ticket 09's missing diagnostic) runs whichever directions
   // this end has, and it must report the absence of statistics rather than stay

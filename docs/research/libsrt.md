@@ -205,6 +205,28 @@ against `:338`, verified against the installed 1.5.7). **The whole "show me
 the delay" requirement needs no invention: `msRcvTsbPdDelay` is the number, and `msRcvBuf` is its
 trend.**
 
+## The receive timeout must be zero, and 0 *is* non-blocking
+
+`SRTO_RCVTIMEO` **"limits the time up to which the receiving operation will block ... The -1 value
+means no time limit"** (`docs/API/API-socket-options.md`; default `-1`). The range is `-1, 0..`, so
+**0 means a zero-millisecond limit — the call returns immediately with `SRT_ETIMEOUT`.** This is
+documented, not inferred, and it matters because the engine's receive loop is paced by the device and
+owes it one period every millisecond.
+
+**What a positive timeout cost, measured on a real SRT link on 2026-09-17.** With the original
+`SRTO_RCVTIMEO = 2 ms`, a two-ended run over the routed path delivered the full rate at the SRT layer
+(`mbpsRecvRate` 9.9 Mbit/s, `pktRcvDrop` 0) while the engine accepted only **42 of ~1000 frames a
+second** and then flooded its playout buffer to capacity and overran. The 2 ms is not the problem on
+its own; the drain loop multiplies it — up to 24 messages per frame, 8 frames per turn — so a turn
+could block for tens of milliseconds, starving the device that the whole design is paced by. Setting
+`SRTO_RCVTIMEO = 0` restored **999 of ~1000 frames a second**, the delay settled at 33 ms and there
+were zero overruns. The same run on the in-process loopback is unchanged, because a loopback receive
+never blocks — which is exactly why **only a socket test can catch this**, and why the engine now has
+one.
+
+The earlier note in this document's spirit ("what a timeout of zero means is not recorded") is now
+closed: it is recorded here, from the primary source and confirmed by the measurement.
+
 ## Bonding and groups: not a v1 path, and not a drop-in later
 
 - **It is a build-time feature.** `option(ENABLE_BONDING "Should the bonding functionality be
