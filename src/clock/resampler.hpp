@@ -5,6 +5,7 @@
 #include <string>
 
 #include "audio/backend.hpp"
+#include "audio/pcm.hpp"
 #include "clock/playout_buffer.hpp"
 
 namespace aes67_srt::clock {
@@ -165,19 +166,12 @@ const char* to_string(Resampler::Converter converter);
 bool parse_converter(const std::string& text, Resampler::Converter* converter);
 
 /**
- * s24_3le bytes to interleaved floats in [-1, 1), and back.
- *
- * Both directions are exact for 24-bit audio: every such integer is representable
- * in a float, and the way back rounds to nearest and clips rather than wrapping — a
- * converter may overshoot, and an overshoot that wrapped would be a click the size
- * of the signal instead of a sample at the ceiling.
- *
- * These sit outside the library guard on purpose: they are the byte seam, they are
- * always compiled, and they are always tested.
+ * The byte seam now lives in `audio/pcm.hpp`, and these aliases keep the names
+ * the clock has always used. It moved because a device backend needs the same
+ * conversion, and a backend that reached into `clock` for it would point the
+ * dependency the wrong way.
  */
-void s24_3le_to_float(const uint8_t* bytes, size_t frames, unsigned channels,
-                      float* samples);
-void float_to_s24_3le(const float* samples, size_t frames, unsigned channels,
-                      uint8_t* bytes);
+using audio::float_to_s24_3le;
+using audio::s24_3le_to_float;
 
 }  // namespace aes67_srt::clock
