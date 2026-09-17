@@ -647,7 +647,7 @@ cat <<'SUMMARY'
     8  Resampling CPU     the clock module's deciding number (ticket 03)
     9  The whole path     whether the daemon accepts the documents we build, and
                           whether its sinks receive our own sources
-                          (ticket 08's hardware criterion; needs --commission-loopback)
+                          (ticket 08's hardware criterion; needs --commission)
 
     Send the whole report file back. A measurement that could not be taken is as
     useful as one that could: it says what is missing from the machine.

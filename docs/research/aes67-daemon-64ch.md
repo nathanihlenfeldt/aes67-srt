@@ -195,3 +195,62 @@ the captured sender field for field now.
 3. **Two provisioning settings are load-bearing**, not preferences: `interface_name` off `lo`, and
    `auto_sinks_update` disabled. Both are set by `scripts/install-daemon.sh` and both would look like
    mysterious breakage if they were not.
+
+## Third session, 2026-09-17: the whole appliance, on the Pi
+
+Same day, later. Everything above that reads "refused" or "unproven" was resolved here, and the
+resolution is what this section supersedes it with.
+
+The full report is `hardware-report-rpi5-nathan-20260917-1022.txt` on issue #18. What it settled:
+
+**Our documents are accepted.** Eight sources, each carrying its own block's eight device channels,
+with the daemon assigning one multicast group each (`239.1.0.1` … `239.1.0.8`):
+
+```json
+{ "id": 1, "name": "aes67-srt block 1", "codec": "L24", "address": "239.1.0.2",
+  "ttl": 15, "payload_type": 98, "dscp": 34, "map": [8,...,15] }
+```
+
+Why the first attempt was refused is at the top of the previous section: `pt.get<T>(...)` throws on a
+missing node, nothing is defaulted, and four fields were missing.
+
+**A sink is accepted and receives.** Not to our own source — that failed for a reason that turned out to
+be unrelated — but to the real eight-channel `AES67-TX-1` sender on the network:
+
+```
+commissioning: chose the announcement "AES67-TX-1" (eight channels of L24)
+commissioning: 8 sources published, 1 sinks subscribed, 1 receiving, PTP locked
+```
+
+and once settled, every flag clean:
+
+```
+rtp_seq_id_error false, rtp_ssrc_error false, rtp_payload_type_error false,
+rtp_sac_error false, receiving_rtp_packet true
+```
+
+**The refusal that cost three runs was a playout delay of zero.** `failed to add sink 0 : (driver)
+command failed` names nothing; bisecting the one value that differed from the daemon's own web UI gave
+`delay 384 -> HTTP 200`, `delay 576 -> HTTP 200`, `delay 0 -> HTTP 400`. This document, and the code,
+first reasoned that "the daemon should add no delay because the A/V delay is ours" — which mistook the
+mechanism, because this is the sink's *receive buffer* rather than a competing delay line.
+
+**The engine runs on this hardware.** Fifteen seconds of duplex at 64 channels against the real
+device, with the transport looped:
+
+```
+RAVENNA audio device: plughw:RAVENNA 64ch @48000Hz s24_3le, capture RUNNING, playback RUNNING
+engine: stopped after 14908 frames sent, 14906 received, 0 refused
+```
+
+14,908 frames in 15.008 s is realtime, and nothing was refused. The unit suite is 93/93 on the Pi
+against 94/94 elsewhere, the difference being the platform branch of the ALSA tests.
+
+**`streamer_enabled: false` did not refuse the PUT, the sources, or the sink.** Whether it stops a
+source we publish from *transmitting* remains the one unmeasured half — and the self-loopback is the
+way to see it, so the two questions are now the same question.
+
+**Still open.** Whether our own sources actually stream: the self-loopback wired all eight sinks and
+reported one receiving during the run, then none afterwards, on distinct multicast groups. The daemon's
+sources read the ALSA device, which our own process holds open while it runs, so the next look should
+watch the sinks *while* the appliance is running rather than after it stops.
