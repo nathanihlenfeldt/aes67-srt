@@ -254,3 +254,36 @@ way to see it, so the two questions are now the same question.
 reported one receiving during the run, then none afterwards, on distinct multicast groups. The daemon's
 sources read the ALSA device, which our own process holds open while it runs, so the next look should
 watch the sinks *while* the appliance is running rather than after it stops.
+
+**Addendum, same session: our sources *do* transmit.** The paragraph above said the self-loopback
+"wired all eight sinks and reported one receiving during the run, then none afterwards". The wiring
+was never the question. `tcpdump` on `eth0` settles it, with `AES67-TX-1` as a control:
+
+```
+10.10.80.196.5004 > 239.1.0.1.5004: UDP, length 1164     (1000 per second)
+```
+
+1164 bytes is a 12-byte RTP header plus 1152 of payload — eight channels at 48 frames of three bytes,
+**exactly one of our blocks**, one packet per millisecond. The daemon transmits what our document
+describes, at the right rate and the right size.
+
+**What fails is the same-host loopback, and it fails below us.** A sink on the box that is also
+transmitting that multicast group never sees it, which is the classic multicast-loopback problem
+rather than anything our code does: a *remote* sink is untouched by it, and the receive direction is
+already proved (a stream from another host arrives and is counted).
+
+So the commissioning loopback is not available on a single box **in this direction**, and no amount of
+work on our side changes that. The honest consequence: proving our audio reaches a *receiver* needs a
+second appliance, which is ticket 10 — and that makes ticket 10 rather more valuable than it looked
+when it was written.
+
+**Also learned, and it will matter for the installer and the control surface:** changing the daemon's
+configuration makes the daemon **restart itself**. `POST /api/config` returned 200, the log shows
+`main:: end` followed by a fresh IGMP join, and requests during the restart window simply fail to
+connect. A configuration write is not a live tweak, and anything that writes to the daemon has to
+expect a gap.
+
+And a small negative result worth keeping: **`streamer_enabled` is not the gate.** With it confirmed
+`true`, a source and a self-subscribed sink were created and nothing was received - because the source
+*was* transmitting and the same-host sink could not see it. The setting is unrelated to whether our
+sources stream.
