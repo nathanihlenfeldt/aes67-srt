@@ -293,3 +293,66 @@ The trace that found the instability is `Plan::trace_ms` in that test file.
 **What increment 2 does not include.** The resampler: the simulation's take rate stands in for it, as
 it did in increment 1, and increment 3 replaces it with libsamplerate. Nothing here has touched a
 device's clock, PTP, or a real link.
+
+## Increment 3, the resampler, measured 2026-09-17
+
+`src/clock/resampler.{hpp,cpp}`, proved by `tests/test_clock_resampler.cpp` and
+`tests/test_clock_resampler_quality.cpp`. This is the last piece of the clock: the buffer holds the
+sender's audio, the control decides how fast it must be consumed, and this consumes it.
+
+**The API came from the library's documentation, not from memory**, and one thing there had to be got
+exactly right: `src_ratio` is **output sample rate over input sample rate**
+(`libsndfile.github.io/libsamplerate/api_misc.html`), while the control produces *input frames
+consumed per output frame*. So `src_ratio = 1 / control.ratio()` — a reciprocal, and the one place in
+this module where getting it wrong is silent rather than loud. `src_set_ratio()` is deliberately *not*
+used: it bypasses the library's interpolation and gives a step in the ratio, which is a step in the
+pitch of everything playing.
+
+### Three things measured that the design had wrong or assumed
+
+| Assumption | Measured |
+|---|---|
+| ADR 0003: "a resampler adds its own small delay" | **Zero.** At ratio 1 a 1 kHz tone comes back **bit-exactly at zero lag** on all three converters (residual 3.9e-7 at worst). The A/V line has nothing to add for it. |
+| The converter needs look-ahead, so the carry holds it | The **carry** is empty after every pull. What the library holds is internal **working room: 48–96 frames (1–2 ms)** — measured as input consumed less output produced. Audio received, not yet played, and bounded by two periods. |
+| What the library consumes per pull is 48 frames times the ratio | It is **quantised to whole periods**: one pull takes 48 input frames or 96, and the ratio lives in the average. A single pull cannot show 10 ppm — that is one frame per 4800 periods. |
+
+That third one changed the test: the rate is verified *in the average*, over 200,000 periods at one
+channel, where the effective ratio came out **10.0 ppm for a requested 10 ppm** (the quantisation's
+residue is 5 ppm over that run, so the measurement has a 2:1 margin). And the carry is verified as a
+**ledger that balances to the frame**: everything the buffer handed over was either consumed by the
+converter or still pending — 95,568 frames in, 95,568 taken, 0 pending. A frame lost there would be
+audio lost with nothing in the log, which is why it is an equation rather than a signal measurement.
+
+### The converter choice, which ADR 0003 left to this increment
+
+The documentation gives all three sinc converters **97 dB SNR** and says they differ in **bandwidth** —
+97%, 90% and 80% of Nyquist. Measured on this project's own path (gain at 1 + 10 ppm, correlated
+against the sender's position):
+
+| Converter | 1 kHz | 10 kHz | 19 kHz | 20 kHz | 21 kHz | 22 kHz | Cost, 8 ch |
+|---|---|---|---|---|---|---|---|
+| `sinc_fastest` | 1.000 | 1.000 | **0.774** | 0.607 | 0.205 | 0.049 | **1.0×** |
+| `sinc_medium` | 1.000 | 1.000 | 1.000 | 1.000 | 0.968 | 0.539 | 2.2× |
+| `sinc_best` | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 6.3× |
+
+So the cheapest converter is not "slightly worse": it is **2.2 dB down at 19 kHz and 14 dB down at
+21 kHz**, which is the top of the audible band taken away, and it is exactly what an 80%-of-Nyquist
+passband means. `sinc_best` is flat to 22 kHz and costs 6.3× the cheapest.
+
+**Decision: `sinc_medium`, and it is the default.** Scaling the Pi's measured 11.27% of one core (at
+`sinc_fastest`, 64 channels, ticket 18) by the measured ratios gives roughly **25% of one core for 64
+channels** — affordable on a four-core appliance — and it buys a passband flat to 21 kHz instead of one
+that loses the top of the band. `sinc_best` at ~70% of a core is not, when phase 2's codec may want
+40–70% for itself. The converter is configuration, not a compile-time choice, so a site that needs the
+last kilohertz can have it.
+
+**The ratios are from this machine, not the Pi.** Only the *shape* of the decision is portable: the
+ratios between converters depend on how NEON-friendly each kernel is, and the absolute figure remains
+the Pi's measurement. The bandwidth figures are physics and do not move.
+
+**Reproduce:** `./build/tests/aes67-srt-tests` (`clock_` cases). 125 tests; the resampler's cases cost
+about 6 seconds, most of it the 200,000-period rate measurement and the converter sweep.
+
+**What increment 3 does not include.** The engine: nothing yet carries a frame from a real device
+through this buffer, so the clock is complete as a module and not yet joined to the receive path. That
+join is what makes the delay figure continuous for ticket 12's UI, and it is the next slice.

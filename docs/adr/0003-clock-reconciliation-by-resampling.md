@@ -62,6 +62,13 @@ this is a decision that could have gone the other way, and the measurement is wh
   budget is ~11% of one Pi 5 core at the cheapest converter.
 - **Latency is unaffected in kind but must be accounted for**: a resampler adds its own small delay,
   and the A/V delay line must know it alongside the codec's frame + 6.5 ms.
+  **Amended 2026-09-17, by measurement: the delay is not what this assumed.** On this project's own
+  signal path a libsamplerate sinc converter reproduces a 1 kHz tone **bit-exactly at zero lag** at
+  ratio 1 — all three converters — so the A/V line has nothing to add for it. What the library *does*
+  hold is working room: at ratio 1 it takes 48–96 frames (1–2 ms) more than it produces over the first
+  pulls, and keeps them. That is audio received and not yet played, which is a real figure for the
+  delay line to know, but it is bounded by two periods and it is not a filter delay. Figures:
+  `docs/research/clock-recovery.md`, "Increment 3".
 - The audibility question is **dissolved rather than answered**. If a future change reintroduces
   corrections — a cheaper design, a different host — that question returns with it.
 - A quality-versus-CPU measurement of the available converters belongs to the clock module's

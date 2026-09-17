@@ -177,6 +177,7 @@ set(AES67_SRT_SOURCES
   src/audio/null_backend.cpp
   src/clock/playout_buffer.cpp
   src/clock/ratio_control.cpp
+  src/clock/resampler.cpp
   src/commissioning.cpp
   src/config.cpp
   src/engine.cpp
@@ -204,7 +205,8 @@ target_compile_options(aes67-srt-core PRIVATE -Wall -Wextra -Wno-unused-paramete
 target_compile_definitions(aes67-srt-core PUBLIC
   AES67_SRT_VERSION="${PROJECT_VERSION}"
   AES67_SRT_WITH_SRT=$<BOOL:${SRT_AVAILABLE}>
-  AES67_SRT_WITH_ALSA=$<BOOL:${ALSA_AVAILABLE}>)
+  AES67_SRT_WITH_ALSA=$<BOOL:${ALSA_AVAILABLE}>
+  AES67_SRT_WITH_SAMPLERATE=$<BOOL:${SAMPLERATE_AVAILABLE}>)
 target_link_libraries(aes67-srt-core
   PUBLIC nlohmann_json::nlohmann_json httplib::httplib Threads::Threads)
 
