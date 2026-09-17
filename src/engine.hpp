@@ -11,6 +11,8 @@
 #include "clock/ratio_control.hpp"
 #include "clock/resampler.hpp"
 #include "config.hpp"
+#include "delay/delay_line.hpp"
+#include "delay/test_signal.hpp"
 #include "transport/link.hpp"
 #include "wire/frame.hpp"
 
@@ -140,12 +142,65 @@ class Engine {
    * and the number an operator trends while a link sags.
    *
    * It is the buffer's level, not a total: the transport's own latency is on top of
-   * it, and the A/V delay line's offset (ticket 13) is added to both.
+   * it, and the A/V delay line's offset is added to both (`egress_delay_ms()`, and
+   * `av_delay_ms()` for the whole sum).
    */
   double delay_ms() const;
 
   /** The delay against what the buffer can hold, 0..1, for a meter or an alarm. */
   double delay_fraction() const;
+
+  /**
+   * The A/V offset the egress delay line is applying, in milliseconds — decision
+   * 8's dial, and the audio side of lipsync (ticket 12).
+   *
+   * It is the value asked for; the line reaches it over the crossfade window,
+   * which is 10 ms, so it is the number an operator sees and trusts.
+   */
+  double egress_delay_ms() const;
+
+  /**
+   * Ask the delay line for a new A/V offset while audio runs.
+   *
+   * Refuses one outside 0..5000 ms. This is the seam the control surface calls
+   * (tickets 13-14); it is not yet safe to call concurrently with the receive
+   * loop, which is that ticket's locking decision rather than this one's.
+   */
+  bool set_egress_delay_ms(double offset_ms, std::string* error);
+
+  /**
+   * Fire the impulse test signal on the channel `egress.test_signal_channel`
+   * selects, on the next period.
+   *
+   * The impulse is sample-accurate: it lands on exactly the egress frame the
+   * engine has reached, so two triggers through the same run are the same
+   * distance apart as the calls that fired them.
+   */
+  bool trigger_test_signal(std::string* error);
+
+  /**
+   * The codec's contribution to the A/V budget, in milliseconds: **zero in v1**,
+   * because v1 encodes nothing (decision 9).
+   *
+   * It exists as a figure rather than a footnote because phase 2 changes it and
+   * the operator's alignment number has to change with it: an Opus encoder adds
+   * its frame plus `OPUS_GET_LOOKAHEAD`, measured at **312 samples = 6.50 ms** on
+   * the appliance (`docs/research/opus.md`), which at 20 ms frames is 26.5 ms off
+   * the top of the delay an operator has dialled. Subtracting it here is what
+   * keeps a codec link alignable without re-learning the number.
+   */
+  double codec_delay_ms() const;
+
+  /**
+   * The whole audio delay an operator is aligning against vision, in
+   * milliseconds: the transport's latency, plus the clock's playout delay, plus
+   * the A/V offset, plus the codec's share.
+   *
+   * It is a sum of what actually knows its own number rather than a promise:
+   * `link.latency_ms` is the buffering budget, `delay_ms()` is the level the
+   * clock is holding, and the other two are configuration and the codec.
+   */
+  double av_delay_ms() const;
 
   /**
    * The clock's correction, in ppm: positive when the sender's clock is the faster.
@@ -178,6 +233,16 @@ class Engine {
   /** One period for the device: pulled through the resampler, or silence. */
   bool play_one_period(std::string* error);
 
+  /**
+   * The last step of the egress path: mix the test signal, delay the period by
+   * the A/V offset, and hand it to the device.
+   *
+   * Every period the device hears goes through here, priming and silence
+   * included, because the egress frame counter has to advance with what is
+   * actually played for a test signal to land where it was asked to.
+   */
+  bool write_period_to_device(std::string* error);
+
   Config config_;
   std::unique_ptr<audio::AudioBackend> backend_;
   std::unique_ptr<transport::Link> link_;
@@ -197,6 +262,19 @@ class Engine {
   std::unique_ptr<clock::PlayoutBuffer> playout_;
   clock::RatioControl control_;
   clock::Resampler resampler_;
+
+  /**
+   * The egress stage (ticket 12): the A/V delay line and the test signal, in the
+   * order `clock -> delay -> egress` puts them.
+   *
+   * Both are the receive loop's to touch, like the clock above, and both are
+   * built per open so a reopened link starts from a clean line rather than one
+   * still holding the previous stream's audio.
+   */
+  delay::DelayLine delay_line_;
+  delay::TestSignal test_signal_;
+  /** Frames the device has been fed since open; the test signal's time base. */
+  uint64_t egress_frames_ = 0;
 
   /** The level the clock holds, in periods, and how long it may take to get there.
    */

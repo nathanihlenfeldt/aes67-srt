@@ -6,12 +6,13 @@ internet: **64 channels — eight 8-channel blocks — of uncompressed L24 PCM a
 same binary acting as transmitter, receiver or both. Configured from a web UI,
 because it ships to other people's sites.
 
-**Status: the wire format and the SRT transport are built and tested.** The repository configures,
-builds, tests and validates its configuration, and it carries frames across a real SRT link in both
-directions — proven by loopback tests that run in CI on Linux and macOS. **It does not yet carry
-audio:** the ALSA ingest and playout, the clock reconciliation and the web UI are still to come. The
-plan, the decisions and the open questions are in the specification, and the measured facts are in
-`docs/research/`.
+**Status: the wire format, the SRT transport, the audio device, the daemon client, the engine, the
+clock and the A/V delay line are built and tested.** The appliance moves audio between an AES67
+device and a single SRT stream in each direction, reconciles the two ends' clock domains by
+continuous resampling (ADR 0003), and can delay its egress audio to match vision with an impulse test
+signal to align against (ticket 12). **The control surface — the REST API and the web UI — is still
+to come**, and so is a two-appliance WAN figure. The plan, the decisions and the open questions are
+in the specification, and the measured facts are in `docs/research/`.
 
 ## Where things are
 

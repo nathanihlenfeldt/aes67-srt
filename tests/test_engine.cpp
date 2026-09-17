@@ -381,6 +381,73 @@ TEST_CASE(engine_counts_the_silence_it_feeds_a_link_that_cannot_fill_the_clock) 
   engine.stop();
 }
 
+TEST_CASE(engine_applies_the_egress_offset_and_refuses_one_it_cannot_hold) {
+  // Ticket 12's dial, through the engine rather than the module: the value the
+  // control surface will set and the operator will read.
+  Config config = engine_config(1, "loopback", 0);
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+  CHECK(engine.open(&error));
+
+  CHECK(engine.set_egress_delay_ms(37.5, &error));
+  CHECK_NEAR(engine.egress_delay_ms(), 37.5, 0.05);
+  // Audio can be delayed, never advanced, and the line has a ceiling.
+  CHECK(!engine.set_egress_delay_ms(-1.0, &error));
+  CHECK(!error.empty());
+  CHECK(!engine.set_egress_delay_ms(5001.0, &error));
+  CHECK_NEAR(engine.egress_delay_ms(), 37.5, 0.05);
+
+  engine.stop();
+}
+
+TEST_CASE(engine_the_impulse_lands_in_the_device_stream_where_it_was_asked) {
+  // The test signal is nothing until it reaches the device, so this drives a whole
+  // egress period and looks at what the device was handed. With an offset of zero
+  // the delay line is a memcpy, so the impulse is exactly where it was fired.
+  Config config = engine_config(1, "loopback", 0);
+  config.egress.test_signal_channel = 2;
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+  CHECK(engine.open(&error));
+
+  const AudioFormat format = aes67_srt::audio::audio_format_from(config.audio);
+  CHECK(engine.trigger_test_signal(&error));
+  CHECK(engine.step_receive(&error));
+
+  std::vector<uint8_t> played(format.period_bytes(), 0);
+  CHECK(engine.backend()->read(played.data(), format.period_frames, &error));
+  CHECK_EQ(audio_bytes::s24_at(played.data(), 2), 0x7FFFFF);
+  CHECK_EQ(audio_bytes::s24_at(played.data(), 0), 0);
+  CHECK_EQ(audio_bytes::s24_at(played.data(), 1), 0);
+
+  engine.stop();
+}
+
+TEST_CASE(engine_the_codec_contributes_nothing_to_the_av_budget_in_v1) {
+  // Decision 9: v1 encodes nothing, so the codec's term is zero. It exists as a
+  // figure because phase 2 changes it and the operator's alignment number has to
+  // change with it. The A/V total is the sum of what each stage knows.
+  Config config = engine_config(1, "loopback", 0);
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+  CHECK(engine.open(&error));
+
+  CHECK_NEAR(engine.codec_delay_ms(), 0.0, 1e-12);
+  CHECK_NEAR(engine.av_delay_ms(),
+             static_cast<double>(config.link.latency_ms) + engine.delay_ms() +
+                 engine.egress_delay_ms(),
+             1e-9);
+
+  CHECK(engine.set_egress_delay_ms(100.0, &error));
+  CHECK_NEAR(engine.av_delay_ms(),
+             static_cast<double>(config.link.latency_ms) + 100.0, 0.05);
+
+  engine.stop();
+}
+
 TEST_CASE(engine_refuses_a_clock_it_could_not_fill) {
   // The clock's geometry comes from the link's own numbers, so a configuration
   // whose alarm is not comfortably above the latency it alarms about has no playout

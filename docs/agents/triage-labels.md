@@ -79,6 +79,10 @@ provenance, not current state.
   application would bind to an existing CoreAudio device instead of shipping a system audio driver. A
   request to write a virtual device driver meets this one, and so does anything that would put
   CoreAudio types inside the shared core.
+- `docs/adr/0006-av-delay-by-crossfade.md` — **proposed, not yet adopted**: the A/V delay line
+  adjusts its offset by a 10 ms crossfade of the read head, not by resampling the way the clock does.
+  A request to reconcile the A/V offset by resampling, or to change how a live offset moves, meets
+  this one.
 
 There is still no `.out-of-scope/` directory: no enhancement has been rejected as `wontfix` yet, so
 there is no prior rejection to surface against a new request.

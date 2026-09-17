@@ -48,6 +48,15 @@ double period_ms(const audio::AudioFormat& format) {
 }
 
 /**
+ * The A/V delay line's ceiling, in milliseconds.
+ *
+ * It matches the 0..5000 the configuration validator accepts, and it is spec open
+ * item 7 that will move it: whether the product's range is 0-2 s or 0-5 s is a
+ * decision about the vision path, not about this module.
+ */
+constexpr double k_max_egress_delay_ms = 5000.0;
+
+/**
  * A duration in milliseconds as a number of periods.
  *
  * The clock counts in periods because that is what it holds, and configuration is
@@ -405,7 +414,7 @@ bool Engine::play_one_period(std::string* error) {
     if (!reached && !late) {
       std::memset(rx_period_.data(), 0, rx_period_.size());
       ++silence_periods_;
-      return backend_->write(rx_period_.data(), format_.period_frames, error);
+      return write_period_to_device(error);
     }
     playing_ = true;
     if (!reached && !prime_reported_) {
@@ -454,6 +463,25 @@ bool Engine::play_one_period(std::string* error) {
   // device is about to be short of if the sender is behind.
   control_.update(playout_->level_ms(), period_ms(format_));
 
+  return write_period_to_device(error);
+}
+
+/**
+ * The egress stage: mix the test signal, delay the period, hand it to the device.
+ *
+ * In-place: `DelayLine::process` writes the input into its ring before it reads
+ * anything back out, so a period can be its own source and destination.
+ * `egress_frames_` advances with what is *played*, not with what is pulled, so a
+ * test signal scheduled against it lands where an operator watching the device
+ * would say it did.
+ */
+bool Engine::write_period_to_device(std::string* error) {
+  test_signal_.mix(rx_period_.data(), format_.period_frames, egress_frames_);
+  if (!delay_line_.process(rx_period_.data(), rx_period_.data(),
+                           format_.period_frames, error)) {
+    return false;
+  }
+  egress_frames_ += format_.period_frames;
   return backend_->write(rx_period_.data(), format_.period_frames, error);
 }
 
@@ -463,6 +491,33 @@ double Engine::delay_ms() const {
 
 double Engine::delay_fraction() const {
   return playout_ != nullptr ? playout_->level_fraction() : 0.0;
+}
+
+double Engine::egress_delay_ms() const {
+  return delay_line_.offset_ms();
+}
+
+bool Engine::set_egress_delay_ms(double offset_ms, std::string* error) {
+  return delay_line_.set_offset_ms(offset_ms, error);
+}
+
+bool Engine::trigger_test_signal(std::string* error) {
+  // The next period, which is the one about to be written: a mark that landed in
+  // the past would be dropped by the queue rather than heard.
+  return test_signal_.trigger(egress_frames_, error);
+}
+
+double Engine::codec_delay_ms() const {
+  // v1 encodes nothing, so the codec's share of the A/V budget is zero. Phase 2
+  // puts an Opus frame + lookahead here; docs/research/opus.md has the measured
+  // 6.50 ms and the roadmap has the question of whether the test signal survives
+  // the codec at all.
+  return 0.0;
+}
+
+double Engine::av_delay_ms() const {
+  return static_cast<double>(config_.link.latency_ms) + delay_ms() +
+         egress_delay_ms() + codec_delay_ms();
 }
 
 double Engine::clock_offset_ppm() const {
@@ -561,10 +616,50 @@ bool Engine::open(std::string* error) {
   }
   resampler_.set_ratio(1.0);
 
+  // The egress stage (ticket 12), fresh per open for the same reason the clock is:
+  // a reopened link must not start with the previous stream's audio still in the
+  // delay line. The line is sized from the same 5000 ms the validator accepts, and
+  // the offset it is opened with is applied immediately rather than crossfaded from
+  // zero — there is nothing to fade from before the first period.
+  delay::DelayLine::Config delay_config;
+  delay_config.channels = format_.channels;
+  delay_config.sample_rate = format_.sample_rate;
+  delay_config.period_frames = format_.period_frames;
+  delay_config.sample_bytes = format_.sample_bytes;
+  delay_config.capacity_ms = k_max_egress_delay_ms;
+  if (!delay_line_.open(delay_config, &reason)) {
+    resampler_.close();
+    link_->close();
+    backend_->close();
+    return fail(error, "engine: the A/V delay line will not open: " + reason);
+  }
+  if (!delay_line_.set_offset_ms(config_.egress.delay_ms, &reason)) {
+    delay_line_.close();
+    resampler_.close();
+    link_->close();
+    backend_->close();
+    return fail(error, "engine: egress.delay_ms: " + reason);
+  }
+
+  delay::TestSignal::Config signal_config;
+  signal_config.channels = format_.channels;
+  signal_config.sample_rate = format_.sample_rate;
+  signal_config.period_frames = format_.period_frames;
+  signal_config.sample_bytes = format_.sample_bytes;
+  signal_config.channel = config_.egress.test_signal_channel;
+  if (!test_signal_.open(signal_config, &reason)) {
+    delay_line_.close();
+    resampler_.close();
+    link_->close();
+    backend_->close();
+    return fail(error, "engine: the test signal will not open: " + reason);
+  }
+
   playing_ = false;
   priming_periods_ = 0;
   prime_reported_ = false;
   silence_periods_ = 0;
+  egress_frames_ = 0;
   // A receiver does not play the instant the first period arrives: it waits until
   // the level is what the latency setting bought. The deadline is what keeps a link
   // that never fills from being silence for ever — after it, playout starts with
@@ -616,7 +711,8 @@ int Engine::run() {
                   // surface will show continuously (ticket 12).
                   "; playout delay " + std::to_string(delay_ms()) +
                   " ms, clock correction " + std::to_string(clock_offset_ppm()) +
-                  " ppm, " + std::to_string(silence_periods_) +
+                  " ppm, A/V offset " + std::to_string(egress_delay_ms()) +
+                  " ms, " + std::to_string(silence_periods_) +
                   " periods of silence");
   close();
   return 0;
@@ -631,6 +727,8 @@ bool Engine::running() const {
 }
 
 void Engine::close() {
+  test_signal_.close();
+  delay_line_.close();
   resampler_.close();
   if (link_) {
     link_->close();

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -166,6 +167,10 @@ TEST_CASE(delay_a_change_mid_stream_is_crossfaded_not_stepped) {
     CHECK(largest <= programme_step + blend_bound);
     CHECK(!line.adjusting());
     CHECK_NEAR(line.applied_offset_ms(), offset, 0.02);
+    std::cout << "    delay crossfade: 0 -> " << offset << " ms, programme step "
+              << programme_step << ", largest step " << largest << " (added "
+              << (largest - programme_step) << ", bound " << blend_bound << ")"
+              << std::endl;
   }
   CHECK_EQ(line.crossfades(), 2u);
 }

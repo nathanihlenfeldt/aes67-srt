@@ -84,17 +84,17 @@ void App::describe() const {
                 "fake mode: null audio backend, fake daemon, loopback transport");
   }
 
-  // What is missing from the *path*, now that the modules themselves exist: the
-  // clock is in the receive path, so audio no longer passes through unaltered — it
-  // is held and resampled — while the delay stage and the control surface that
-  // would show and steer any of it are still to come. A build that carries audio
-  // should say where it stops, for the same reason the old line said what it did
-  // not carry at all.
+  // What the path now does, module by module, and what is still missing: the clock
+  // holds the playout delay and resamples at the ratio it decides, the delay line
+  // adds the A/V offset on the way out, and the control surface that would show and
+  // steer any of it is still to come. A build that carries audio should say where
+  // it stops, for the same reason the old line said what it did not carry at all.
   log().write(
       LogLevel::info,
-      "audio path: device -> blocks -> frame -> link -> clock -> device, and "
-      "the clock holds the playout delay and resamples at the ratio it decides: "
-      "no delay stage yet (ticket 12), no control surface (tickets 13-14)");
+      "audio path: device -> blocks -> frame -> link -> clock -> delay -> device, "
+      "the clock holding the playout delay and resampling at the ratio it decides, "
+      "the delay line adding the A/V offset and the test signal (ticket 12): no "
+      "control surface yet (tickets 13-14)");
 }
 
 void App::request_stop() {
