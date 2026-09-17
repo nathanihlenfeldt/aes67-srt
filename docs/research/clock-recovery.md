@@ -425,6 +425,47 @@ real link's arrival pattern. Everything above runs on integer-exact simulated cl
 I chose. That is the hardware session's job (ticket 09's two appliances, #18), and it is why no ticket
 here is "done" on CI alone.
 
+## The clock in the engine's receive path, 2026-09-17
+
+`src/engine.cpp`. The three pieces now sit in the appliance's own receive loop, in the shape the
+module-level join test modelled: messages in, frames reassembled and decoded, each period pushed into the
+buffer by its sample position, then exactly one period pulled through the resampler at the control's ratio
+and written to the device. The loop is still paced by the device, so the buffer is what absorbs the
+difference between the sender's rate and ours.
+
+What the engine's loopback — one process, one clock, 64 channels, two seconds — now reports:
+
+```
+engine loopback through the clock: 1880 periods of audio, 119 of silence,
+                                   delay 118 ms, correction -0.087 ppm
+```
+
+- **119 periods of silence** before the first audio: the receiver waits until its level is what
+  `link.latency_ms` bought (120 periods, since one 48-frame period is one millisecond). That is the
+  priming policy, and it is the difference between "the first frame arrives and the device gets whatever
+  happened to be there" and "the device gets audio at a known delay".
+- **delay 118 ms** against a target of 120: the two periods the converter holds as its working room. The
+  control reads that deficit as a small rate error, consumes slightly less for a while, and the level
+  returns to the target — a **transient, not a bias**, because the converter's hold is a one-time
+  transference rather than a permanent loss. (Worth checking rather than assuming: a permanent deficit
+  would wind the integral up at 0.6 ppm a minute and put a standing bias in the ratio.)
+- **correction −0.087 ppm** where the truth is zero, both ends sharing one clock: that transient, on its
+  way back.
+
+**And byte-exactness through the engine is gone, deliberately.** ADR 0003's resampler is transparent only
+at a ratio of exactly 1, and the working room takes even a loopback briefly through a non-zero ratio — so
+the engine's old headline test, *"a period written to one box's device comes out of another's byte for
+byte"*, now asserts that the audio arrives at unity, the level holds, and nothing is refused. Byte-exactness
+is still proved where it belongs: the transport's own loopback, and the resampler at ratio 1, where it is
+measured bit-exact. **That is the cost of the clock, stated rather than discovered.**
+
+**What the engine exposes for ticket 12**: `delay_ms()` (the buffer's level), `delay_fraction()`,
+`clock_offset_ppm()`, `clock_ratio()`, `silence_periods()`. The *trend* the criterion asks for is a
+difference between polls, so it belongs to whoever polls — the control surface — and not here.
+
+**Still not measured: any of this on hardware.** Everything above is a process-local loopback, and the Pi
+has run the engine but never with the clock in it.
+
 ## The arrival spread, measured on a real path, 2026-09-17
 
 `scripts/measure-link-spread.sh`, new: two machines, one running `listen` and one running `send`, both

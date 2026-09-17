@@ -7,6 +7,9 @@
 #include <vector>
 
 #include "audio/backend.hpp"
+#include "clock/playout_buffer.hpp"
+#include "clock/ratio_control.hpp"
+#include "clock/resampler.hpp"
 #include "config.hpp"
 #include "transport/link.hpp"
 #include "wire/frame.hpp"
@@ -36,10 +39,26 @@ namespace aes67_srt {
  * The cost is that the two directions are coupled *within* a direction's own
  * thread only; a stalled link slows its own direction and nothing else.
  *
- * What is deliberately *not* here yet: the clock module's resampling and the
- * delay module's offset. Audio goes through unaltered, so the loopback this
- * proves is byte-exact rather than merely close, and anything the clock adds
- * later has to preserve that.
+ * What the clock does here, and what it costs the loopback. The receive path now
+ * holds the sender's audio in a `PlayoutBuffer`, asks a `RatioControl` how fast to
+ * consume it, and pulls each period for the device through a `Resampler` — the
+ * three pieces of ticket 11 in the order that module was built in. The loop is
+ * still paced by the device (`write` blocks until the ring has room), so the buffer
+ * is what absorbs the difference between the sender's rate and ours.
+ *
+ * **The byte-exact loopback survives, with a caveat worth stating.** A resampler is
+ * transparent only when the ratio is exactly 1, and in a loopback the two ends
+ * share one clock, so the level sits exactly at its target, the control's
+ * correction stays at zero and the ratio stays at 1 — measured bit-exact in
+ * `tests/test_clock_resampler.cpp`. What is *not* preserved is the first couple of
+ * periods: the converter fills its working room before it produces anything, so the
+ * first periods the device gets are silence. The engine's loopback test allows for
+ * exactly that and asserts bit-exactness after it.
+ *
+ * The delay figure ticket 12 asks for is `delay_ms()` — the buffer's level, which
+ * is the only thing in the appliance that actually knows it. Its *trend* is a
+ * difference between polls, so it belongs to whoever polls (the control surface),
+ * not here.
  */
 class Engine {
  public:
@@ -116,6 +135,34 @@ class Engine {
   uint64_t frames_received() const;
   uint64_t frames_refused() const;
 
+  /**
+   * The playout delay the clock is holding, in milliseconds — ticket 12's figure,
+   * and the number an operator trends while a link sags.
+   *
+   * It is the buffer's level, not a total: the transport's own latency is on top of
+   * it, and the A/V delay line's offset (ticket 13) is added to both.
+   */
+  double delay_ms() const;
+
+  /** The delay against what the buffer can hold, 0..1, for a meter or an alarm. */
+  double delay_fraction() const;
+
+  /**
+   * The clock's correction, in ppm: positive when the sender's clock is the faster.
+   *
+   * At convergence this is not a state but a *measurement* — the offset between the
+   * two crystals — and it converges far more slowly than the level does, so it is a
+   * diagnostic rather than a control reading. See the clock's own documentation.
+   */
+  double clock_offset_ppm() const;
+
+  /** The ratio the resampler is applying: input frames consumed per output frame.
+   */
+  double clock_ratio() const;
+
+  /** Periods the device was fed silence for because nothing could be played. */
+  uint64_t silence_periods() const;
+
   /** The device, for the caller that has to feed or read it. Not owned here. */
   audio::AudioBackend* backend();
   const audio::AudioBackend* backend() const;
@@ -125,11 +172,42 @@ class Engine {
   void receive_loop();
   void close();
 
+  /** Move whatever complete frames have arrived into the playout buffer. */
+  void receive_into_buffer(std::string* error);
+
+  /** One period for the device: pulled through the resampler, or silence. */
+  bool play_one_period(std::string* error);
+
   Config config_;
   std::unique_ptr<audio::AudioBackend> backend_;
   std::unique_ptr<transport::Link> link_;
   wire::Reassembler reassembler_;
   audio::AudioFormat format_;
+
+  /**
+   * The clock, in the order it was built: a buffer that holds the sender's audio by
+   * sample position, a control that steers the ratio from the buffer's level, and a
+   * resampler that consumes the buffer at that ratio.
+   *
+   * The buffer is built in `prepare` because its geometry comes from the format;
+   * the control and the resampler are members so their state survives a link that
+   * is reopened. Nothing here is thread-safe, and nothing needs to be: the receive
+   * loop is the only thread that touches them.
+   */
+  std::unique_ptr<clock::PlayoutBuffer> playout_;
+  clock::RatioControl control_;
+  clock::Resampler resampler_;
+
+  /** The level the clock holds, in periods, and how long it may take to get there.
+   */
+  uint64_t target_periods_ = 0;
+  uint64_t prime_deadline_periods_ = 0;
+  /** False until playout starts: a receiver has nothing to play before its level.
+   */
+  bool playing_ = false;
+  uint64_t priming_periods_ = 0;
+  bool prime_reported_ = false;
+  uint64_t silence_periods_ = 0;
 
   /** The link id every frame of this link carries; see the note in the .cpp. */
   uint16_t link_id_ = 0;

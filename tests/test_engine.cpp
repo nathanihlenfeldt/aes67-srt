@@ -2,12 +2,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "audio/backend.hpp"
+#include "audio_bytes.hpp"
+#include "clock/resampler.hpp"
 #include "config.hpp"
 #include "test_framework.hpp"
 #include "transport/link.hpp"
@@ -225,13 +228,28 @@ TEST_CASE(engine_refuses_a_configuration_that_would_drop_audio) {
   CHECK(contains(error, "48"));
 }
 
-TEST_CASE(engine_carries_a_period_from_one_box_to_another) {
+TEST_CASE(engine_carries_audio_from_one_box_to_another_through_the_clock) {
   // The commissioning loopback, out of the pieces this project actually has: a
-  // device with defined behaviour at each end, a real SRT link between them, and
-  // the whole path — device, blocks, frame, messages, and back — driven one turn
-  // at a time so that nothing is racing anything.
+  // device with defined behaviour at each end, a real SRT link between them, the
+  // clock in between, and the whole path — device, blocks, frame, messages, clock,
+  // device — driven one turn at a time so that nothing is racing anything.
+  //
+  // **What changed when the clock landed here: this cannot assert byte-exactness
+  // any more, and that is a consequence of ADR 0003 rather than a regression.**
+  // Through a resampler the output equals the input only while the ratio is exactly
+  // 1, and the converter's two periods of working room are a level deficit the
+  // control reads as a rate error, so it corrects — by resampling, which is the
+  // point. Byte-exactness is proved where it still belongs: the transport's own
+  // loopback (`test_transport.cpp`) and the resampler at ratio 1
+  // (`test_clock_resampler.cpp`). What this test proves is that the clock carries
+  // the audio and holds its level, with nothing lost.
   if (!aes67_srt::transport::Link::available()) {
     std::cout << "  no libsrt in this build: skipping the engine loopback"
+              << std::endl;
+    return;
+  }
+  if (!aes67_srt::clock::Resampler::available()) {
+    std::cout << "  no libsamplerate in this build: skipping the engine loopback"
               << std::endl;
     return;
   }
@@ -262,33 +280,81 @@ TEST_CASE(engine_carries_a_period_from_one_box_to_another) {
     return;
   }
 
-  // The site's own AES67 source puts a period onto its device.
+  // The site's own AES67 source puts audio onto its device: a constant, because a
+  // resampler passes DC at unity and a period that encoded its own position would
+  // come back filtered — the wrong signal for a path that resamples by design.
   const AudioFormat format = aes67_srt::audio::audio_format_from(site_config.audio);
-  const std::vector<uint8_t> period = make_period(format);
-  CHECK(site.backend()->write(period.data(), format.period_frames, &error));
+  const std::vector<uint8_t> period = audio_bytes::constant_period(format, 1000000);
 
-  // One turn of the transmit loop: a period in, a frame's worth of messages out.
-  CHECK(site.step_transmit(&error));
-  CHECK_EQ(site.frames_sent(), uint64_t{1});
-
-  // The far end turns until a whole frame has arrived. A frame is eight
-  // messages, so one turn is not always enough — and a turn that produced no
-  // frame is not a failure, which is what lets this loop be driven without a
-  // timer and without a thread.
-  for (int turn = 0; turn < 64 && remote.frames_received() == 0; ++turn) {
-    CHECK(remote.step_receive(&error));
-  }
-  CHECK_EQ(remote.frames_received(), uint64_t{1});
-  CHECK_EQ(remote.frames_refused(), uint64_t{0});
-
-  // What comes out of the far end's device is what went into the near end's,
-  // byte for byte: 64 channels, eight blocks, one frame, across an SRT link
-  // between two processes' worth of engine.
+  // The clock plays nothing until its level is what the link's latency bought, so a
+  // loopback that sends one frame now proves nothing: the receiver would still be
+  // priming. Drive both ends for a while instead — the sender emits a frame per
+  // turn, the receiver moves what arrived and plays one period.
+  //
+  // With 48-frame periods at 48 kHz one period *is* one millisecond, so the target
+  // in periods is the latency in milliseconds: 120.
+  const int target_periods = site_config.link.latency_ms;
+  int periods_with_audio = 0;
+  int turns = 0;
   std::vector<uint8_t> played(format.period_bytes(), 0);
-  CHECK(remote.backend()->read(played.data(), format.period_frames, &error));
-  CHECK(played == period);
+  // Enough turns to prime the clock and then prove the audio flows: the claim does
+  // not need minutes of it, and every turn costs a period of real time through the
+  // device.
+  const int total_turns = target_periods + 300;
+  for (; turns < total_turns; ++turns) {
+    CHECK(site.backend()->write(period.data(), format.period_frames, &error));
+    CHECK(site.step_transmit(&error));
+    CHECK(remote.step_receive(&error));
+    CHECK(remote.backend()->read(played.data(), format.period_frames, &error));
+    if (audio_bytes::s24_at(played.data(), 0) == 1000000) {
+      ++periods_with_audio;
+    }
+  }
+
+  // The audio arrived, at unity — not silence, and not something the clock mangled.
+  CHECK(periods_with_audio > 150);
+  // Nothing was lost and nothing was refused: every frame that arrived is in the
+  // buffer, the converter or the device.
+  CHECK(remote.frames_received() > static_cast<uint64_t>(total_turns) - 10);
+  CHECK_EQ(remote.frames_refused(), uint64_t{0});
   CHECK_EQ(remote.backend()->overruns(), 0u);
+  // The clock did not stay silent: playout started once the level was up.
+  CHECK(remote.silence_periods() > 0u);
+  CHECK(remote.silence_periods() < 200u);
+  // And the delay figure ticket 12 asks for is exposed, near the level the link's
+  // latency bought — short by the converter's working room, which the control is
+  // refilling.
+  CHECK(remote.delay_ms() > target_periods - 4);
+  CHECK(remote.delay_ms() < target_periods + 2);
+  CHECK(remote.delay_fraction() > 0.0);
+  // Two ends sharing one clock, so the true offset is zero and the correction has
+  // no reason to be anywhere else.
+  CHECK(std::fabs(remote.clock_offset_ppm()) < 10.0);
+  CHECK_NEAR(remote.clock_ratio(), 1.0, 1e-4);
+
+  std::cout << "    engine loopback through the clock: " << periods_with_audio
+            << " periods of audio, " << remote.silence_periods()
+            << " of silence, delay " << remote.delay_ms() << " ms, correction "
+            << remote.clock_offset_ppm() << " ppm" << std::endl;
 
   site.stop();
   remote.stop();
+}
+
+TEST_CASE(engine_refuses_a_clock_it_could_not_fill) {
+  // The clock's geometry comes from the link's own numbers, so a configuration
+  // whose alarm is not comfortably above the latency it alarms about has no playout
+  // buffer to build: a capacity at or below the target is a buffer that overruns
+  // the first time a link sags, and that is a configuration error rather than a
+  // runtime one.
+  Config config = engine_config(8);
+  config.link.latency_ms = 500;
+  config.link.alarm_delay_ms =
+      400;  // below the latency it is supposed to alarm about
+
+  Engine engine;
+  std::string error;
+  CHECK(!engine.prepare(config, &error));
+  CHECK(contains(error, "alarm_delay_ms"));
+  CHECK(contains(error, "playout buffer"));
 }
