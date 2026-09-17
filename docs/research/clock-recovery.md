@@ -522,3 +522,38 @@ computed correctly; its text was not.
 sender is a C loop rather than the engine, so the sender-side figures belong to that loop. A *real* WAN
 pair — ticket #10, two appliances — is what turns this into a field figure, and the script exists so that
 session can repeat it in two minutes.
+
+## The clock offset cannot be measured on the null backend, 2026-09-17
+
+The handoff argued that with the clock in the engine, the ppm offset between two ends "costs nothing
+extra: run both ends for ~20 minutes and read `clock correction ... ppm`". **That is true only with a real
+device, and this session's two-machine runs showed why.**
+
+Pi as caller, laptop as listener, the two routed subnets, `aes67_daemon.fake: true` and
+`audio.backend: null` at both ends — the configuration the bench is asked to use so the RAVENNA device is
+left alone. With the receive-path fix in place the link carried the whole rate both ways (50 s: 49,838
+sent / 50,004 received and 50,004 / 49,803; 0 refused, 0 dropped, 0 overruns), so the delivery question is
+answered. But the clock did not settle, and it did not even move toward settling:
+
+| run | listener level | listener correction | caller level | caller correction |
+|---|---|---|---|---|
+| 50 s | 447 ms | **+200 ppm (clamp)** | 88 ms | −90.8 ppm |
+| 5 min | **729 ms, climbing ~1.1 ms/s** | **+200 ppm (clamp)** | 74 ms | **−200 ppm (clamp)** |
+
+A climbing level at the clamp is an apparent rate error of ~1,100 ppm. No two crystals are 1,100 ppm
+apart, so the loop is not measuring the crystals. It is measuring **the null backend's own pacing**, and
+that was confirmed directly: the null backend delivered 5,000 periods in **4.99921 s** against a perfect
+5.00000 s — **−158 ppm while idle**, and the bench behaved as though the figure were larger under load
+(both engines plus the ssh session on one laptop). The control's clamp is ±200 ppm, so a fake device off
+by hundreds of ppm pins the correction at the clamp and the level runs away.
+
+**The level loop steers on the device's rate, so the device has to be the real one.** The RAVENNA device
+is paced by the PTP-locked hardware clock, which is the thing the module exists to reconcile; a
+`sleep_for` fake is paced by the scheduler and a monotonic clock, and is off by more than any crystal
+difference it is meant to measure. **So the ppm figure needs the real device at the receiving end** —
+part of ticket 09's two appliances, not something the null-audio bench can produce. This corrects the
+handoff's "costs nothing extra": it costs a device.
+
+What the bench *can* still measure is throughput, delivery, the receive path and the transport's
+behaviour, and that is what these runs were for. It cannot measure the clock.
+
