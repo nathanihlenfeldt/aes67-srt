@@ -180,6 +180,7 @@ set(AES67_SRT_SOURCES
   src/clock/resampler.cpp
   src/commissioning.cpp
   src/config.cpp
+  src/delay/delay_line.cpp
   src/engine.cpp
   src/log.cpp
   src/transport/link.cpp

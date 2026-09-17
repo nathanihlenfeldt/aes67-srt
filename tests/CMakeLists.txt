@@ -12,6 +12,7 @@ add_executable(aes67-srt-tests
   test_commissioning.cpp
   test_config.cpp
   test_daemon.cpp
+  test_delay_line.cpp
   test_engine.cpp
   test_main.cpp
   test_transport.cpp
