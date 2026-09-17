@@ -89,12 +89,39 @@ error commissioning: cannot publish source 0 (block 0):
 
 That answers the question this document called "the first thing to measure on the Pi" — and the answer
 is **neither** of the two it offered. The daemon does not default `ttl` and does not zero it: **it
-rejects the document.** So the four fields `aes67-sip` sends from its own configuration (`ttl`, `dscp`,
-`payload_type`, `refclk_ptp_traceable`) are required rather than optional, and the reasoning here that
-omitting them was safer than inventing a site's multicast policy was **wrong in outcome**: omitting
-gets a 400 naming a field, and carries no audio either way. The lesson is in the shape of the mistake —
-"inventing a policy" and "omitting a required field" are not the two options; reading the daemon's own
-schema was.
+rejects the document.**
+
+**And the rest of the schema was read from the daemon's own parser rather than discovered one round
+trip at a time.** `daemon/json.cpp` at the installed commit (`bondagit-4.0.1`, `68bd278`) reads a source
+with `pt.get<T>(...)` for *every* field, and `pt.get` throws when a node is missing — so nothing is
+defaulted and nothing is zeroed: a document that omits a field is refused. The function carries its own
+template as a comment, and those are the values we now send:
+
+```json
+"map": [ 0, 1, 2, 3, 4, 5, 6, 7 ],  "max_samples_per_packet": 48,
+"codec": "L24",  "address": "",
+"ttl": 15,  "payload_type": 98,  "dscp": 34,  "refclk_ptp_traceable": false
+```
+
+We were sending the first four and missing the last four. The sibling `aes67-sip` sends 15/98/34 for the
+same reason — it read this template — so those numbers were never its invention, and our "inventing a
+site's multicast policy" reasoning was aimed at the wrong danger. **Omitting a required field is not the
+conservative choice; it is a 400.**
+
+The sink document was already complete: `json_to_sink` requires `name`, `io`, `source`, `use_sdp`,
+`sdp`, `delay`, `ignore_refclk_gmid`, `map`, and ours has all eight.
+
+`payload_type` 98 pairs with `codec` L24 in the template. L16's payload type is **97 by AES67
+convention and is not confirmed by the template**, which shows only L24 — v1 ships L24, so the L16 case
+is unverified.
+
+There is now a test for each document asserting every field the parser reads, so the next omission fails
+in CI rather than on hardware. It was checked against a deliberate mutant: dropping `ttl` fails it with
+`[json.exception.out_of_range.403] key 'ttl' not found`.
+
+**Open, and now narrower:** TTL and DSCP are arguably *site* policy rather than daemon defaults —
+multicast scope and QoS marking — and making them configurable is an open item, since the spec's
+configuration schema has no such fields.
 
 **`streamer_enabled: false` did not block the PUT.** The daemon parsed far enough to complain about the
 document, so that setting is not what refused us. Whether it blocks *streaming* from a source we hand
@@ -107,8 +134,9 @@ reported `capture RUNNING, playback RUNNING`**: both substreams triggered, which
 `RavennaBackend::start_stream()` exists to produce and which nothing had confirmed on hardware until
 now.
 
-**PTP is locked**, jitter 329 this time against 9 in the first session. Whether that is load or the
-moment is unknown; it is a number to watch rather than a finding.
+**PTP is locked**, and its jitter is *fleeting* rather than a finding: 9 in the first session, 329 in the
+second, 13 in the third, with no change to anything in between. Treat it as a number to watch, not a
+measurement of anything.
 
 **Versions:** `aes67-daemon bondagit-4.0.1`, driver `ravenna-alsa-lkm/d4f77d4` (from `dkms status` —
 the script's own `git rev-parse` was refused as root-owned and now overrides it one-shot rather than
@@ -120,10 +148,10 @@ the captured sender field for field now.
 
 ## Unresolved
 
-- **What the daemon requires of a source document, beyond `ttl`.** `ttl` is the first field it named
-  and there may be more behind it. **The authority is the daemon's own source on the Pi**
-  (`/opt/aes67-linux-daemon`, bondagit-4.0.1): read the parser rather than discovering one field per
-  round trip, which is what the omission above cost.
+- **Whether the daemon now accepts our documents, and whether the streams carry.** The schema is known
+  and encoded in a test (above), so the next commissioning run is the one that says whether the
+  corrected source document is accepted, whether the sinks subscribe, and how many report
+  `receiving_rtp_packet`. Nothing has got past the document yet on this hardware.
 - **The 64-channel mapping** — which AES67 stream carries which device channels — is what our documents
   *declare* in `map`, and the daemon has not yet accepted a single one of ours. It stays open until a
   commissioning run gets past the document.

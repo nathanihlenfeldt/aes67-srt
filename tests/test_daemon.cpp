@@ -272,6 +272,63 @@ TEST_CASE(daemon_the_source_names_the_payload_the_wire_format_carries) {
   CHECK_EQ(make_block_source(config, muted).at("enabled").get<bool>(), true);
 }
 
+TEST_CASE(daemon_a_source_document_carries_every_field_the_daemon_reads) {
+  // The daemon reads a source with `pt.get<T>(...)` for each of these, and
+  // `pt.get` *throws* when a node is missing. A document that omits one is
+  // therefore not defaulted — it is refused, with the field named:
+  //
+  //   HTTP 400: error parsing JSON: No such node (ttl)
+  //
+  // That is what happened on the Pi on 2026-09-17, because the first version of
+  // this document omitted the four fields at the end of this list, on the
+  // reasoning that inventing a site's multicast policy was worse than omitting a
+  // field. It was not: omitting was never the safe option, reading the daemon's
+  // schema was. This test exists so that the next omission is caught here rather
+  // than on somebody's hardware.
+  //
+  // Authority: `daemon/json.cpp`, `json_to_source` — bondagit-4.0.1 @ 68bd278 —
+  // and the values asserted below are that function's own template's.
+  const Config config = default_config();
+  const json source = make_block_source(config, config.blocks[0]);
+
+  for (const char* key :
+       {"enabled", "name", "io", "map", "max_samples_per_packet", "codec",
+        "address", "ttl", "payload_type", "dscp", "refclk_ptp_traceable"}) {
+    CHECK(source.contains(key));
+  }
+
+  CHECK_EQ(source.at("ttl").get<int>(), 15);
+  CHECK_EQ(source.at("payload_type").get<int>(), 98);  // paired with codec L24
+  CHECK_EQ(source.at("dscp").get<int>(), 34);
+  CHECK_EQ(source.at("refclk_ptp_traceable").get<bool>(), false);
+  CHECK_EQ(source.at("codec").get<std::string>(), std::string("L24"));
+
+  // L16 changes both the codec and the payload type together, because a document
+  // that named one and not the other would describe a stream it is not.
+  Config narrow = config;
+  narrow.audio.format = "s16_le";
+  const json l16 = make_block_source(narrow, narrow.blocks[0]);
+  CHECK_EQ(l16.at("codec").get<std::string>(), std::string("L16"));
+  CHECK_EQ(l16.at("payload_type").get<int>(), 97);
+}
+
+TEST_CASE(daemon_a_sink_document_carries_every_field_the_daemon_reads) {
+  // The same rule for the sink — `daemon/json.cpp`, `json_to_sink` — and this
+  // document happened to be complete from the start, which is worth asserting
+  // rather than assuming: the source's four missing fields were invisible until
+  // a real daemon refused them.
+  const Config config = default_config();
+  json sink;
+  std::string error;
+  CHECK(make_block_sink(config.blocks[0], "v=0\r\ns=Remote\r\n", &sink, &error));
+
+  for (const char* key : {"name", "io", "source", "use_sdp", "sdp", "delay",
+                          "ignore_refclk_gmid", "map"}) {
+    CHECK(sink.contains(key));
+  }
+  CHECK_EQ(sink.at("delay").get<int>(), 0);
+}
+
 TEST_CASE(daemon_a_sink_without_a_remote_sdp_is_refused_and_names_the_block) {
   const Config config = default_config();
   json sink;

@@ -300,6 +300,23 @@ std::string codec_for(const std::string& format) {
   return format == "s16_le" ? "L16" : "L24";
 }
 
+/**
+ * The RTP payload type the daemon expects for a codec.
+ *
+ * `98` is not a guess: it is the value in the daemon's own source template
+ * (`daemon/json.cpp` at `json_to_source`), paired there with `codec: "L24"`. The
+ * sibling `aes67-sip` sends the same number for the same reason — it read the
+ * template, which is why its values are the daemon's defaults rather than an
+ * invented policy.
+ *
+ * `97` for L16 is AES67's static L16 payload type and is **the one value here the
+ * template does not confirm**, because its example is L24. v1 ships L24, and the
+ * L16 case is recorded as unverified in `docs/research/aes67-daemon-64ch.md`.
+ */
+uint8_t payload_type_for(const std::string& format) {
+  return format == "s16_le" ? 97 : 98;
+}
+
 }  // namespace
 
 std::string block_stream_name(int block_index) {
@@ -307,30 +324,37 @@ std::string block_stream_name(int block_index) {
 }
 
 json make_block_source(const Config& config, const BlockConfig& block) {
+  // Every field here is one the daemon *reads*, and it reads them all with
+  // `pt.get<T>(...)`, which throws when a node is missing. The first version of
+  // this document omitted `ttl`, `payload_type`, `dscp` and
+  // `refclk_ptp_traceable`, on the reasoning that inventing a site's multicast
+  // policy was worse than omitting a field — and the daemon answered with
+  // `HTTP 400: error parsing JSON: No such node (ttl)` on a Pi. Omitting was
+  // never the safe option; reading the daemon's own schema was.
+  //
+  // The values are the daemon's own defaults, from the template in
+  // `daemon/json.cpp` at `json_to_source` (bondagit-4.0.1, commit 68bd278), so
+  // this is what the daemon would produce for a source created in its own web UI.
+  // TTL and DSCP are arguably site policy — multicast scope and QoS marking — and
+  // making them configurable is an open item rather than a decision taken here.
   return json{
-      // Always enabled, even for a block that is muted: mute is applied in this
-      // appliance's own pipeline, and a stream that disappears from the far
-      // end's routing grid because somebody pressed mute is a call-out, not a
-      // mute.
+      // Always enabled, even for a muted block: mute is applied in this
+      // appliance's own pipeline, and a stream that vanishes from the far end's
+      // routing grid because somebody pressed mute is a call-out, not a mute.
       {"enabled", true},
       // From the index alone, never from the channels: an operator who re-maps
       // which device channels a block carries must not thereby rename the
       // stream that the far end has already subscribed to.
       {"name", block_stream_name(block.index)},
-      // The device the daemon captures from and plays to.
       {"io", "Audio Device"},
       {"codec", codec_for(config.audio.format)},
-      // Empty means "let the daemon choose from its own rtp_mcast_base", which
-      // is the address the site's routers and PTP domain are already built
-      // around.  Choosing one here would be this appliance deciding site
-      // multicast policy.
-      {"address", ""},
-      // One millisecond at 48 kHz, which the configuration validator has
-      // already tied to audio.period_frames: the daemon's frame size and ours
-      // are the same number, and the test suite asserts they stay that way.
+      {"address", ""},  // empty: let the daemon choose from its multicast base
       {"max_samples_per_packet", config.audio.period_frames},
-      // The mapping. Eight device channels, and the whole of what "block 3" means.
       {"map", block.channels},
+      {"ttl", 15},
+      {"payload_type", payload_type_for(config.audio.format)},
+      {"dscp", 34},
+      {"refclk_ptp_traceable", false},
   };
 }
 
