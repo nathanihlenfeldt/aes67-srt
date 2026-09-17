@@ -44,6 +44,15 @@ class App {
   void set_fake(bool fake);
 
   /**
+   * Ask the daemon to subscribe each block's sink to this appliance's own
+   * source: the commissioning loopback, transmitting to ourselves.
+   *
+   * Off by default, because it is a *test* rather than an operating mode — a
+   * site wires its sinks to the far end, not to the box in front of it.
+   */
+  void set_commissioning_loopback(bool enabled);
+
+  /**
    * Log what this build is and what it is not.
    *
    * Printed on every start: an appliance in someone else's building is
@@ -72,6 +81,7 @@ class App {
 
   Config config_;
   bool fake_ = false;
+  bool commissioning_loopback_ = false;
 };
 
 }  // namespace aes67_srt

@@ -3,8 +3,11 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <memory>
 #include <thread>
 
+#include "aes67/daemon_client.hpp"
+#include "commissioning.hpp"
 #include "engine.hpp"
 #include "log.hpp"
 #include "version.hpp"
@@ -50,6 +53,10 @@ void App::set_fake(bool fake) {
   if (fake_) {
     apply_fake();
   }
+}
+
+void App::set_commissioning_loopback(bool enabled) {
+  commissioning_loopback_ = enabled;
 }
 
 void App::describe() const {
@@ -105,8 +112,33 @@ int App::run() {
   }
   describe();
 
-  Engine engine;
   std::string error;
+
+  // The daemon seam, before the engine starts: publish what this appliance
+  // transmits, and — when commissioning — subscribe to ourselves. Doing it first
+  // means a daemon that refuses is reported before audio is running, which is
+  // the difference between a sentence and a hunt.
+  //
+  // A failure here does *not* stop the appliance, because the SRT link does not
+  // depend on the AES67 wiring: it is the daemon that feeds the device, so an
+  // unwired daemon produces silence rather than a broken link, and refusing to
+  // start would take down the half that works. Whether "no AES67 wiring" should
+  // be a refusal is the preflight's question (ticket 13), not this one's.
+  //
+  // Unless the operator asked for the loopback specifically, in which case the
+  // run *is* the test and a failed test is a failed run.
+  std::unique_ptr<daemon::DaemonClient> daemon =
+      daemon::DaemonClient::create(config_.daemon);
+  CommissioningResult commissioning;
+  if (!commission(daemon.get(), config_, commissioning_loopback_, &commissioning,
+                  &error)) {
+    log().write(LogLevel::error, error);
+    if (commissioning_loopback_) {
+      return static_cast<int>(ExitCode::runtime_error);
+    }
+  }
+
+  Engine engine;
   if (!engine.prepare(config_, &error)) {
     log().write(LogLevel::error, error);
     return static_cast<int>(ExitCode::runtime_error);

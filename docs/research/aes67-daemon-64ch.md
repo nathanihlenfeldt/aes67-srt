@@ -87,6 +87,12 @@ somebody "fixes" it.
   reasoning that inventing a site's multicast policy is worse than omitting a field. **Whether the
   daemon defaults them or zeroes them is the first thing to measure on the Pi**, because a zeroed
   `payload_type` would produce silence with nothing reporting it. Ticket 09, the real-daemon half.
+- **`streamer_enabled: false` may block a source we publish.** Provisioning sets it false, with the
+  reason recorded in that script: it "would capture the RAVENNA device". The commissioning loopback
+  now publishes one source per block over REST and subscribes a sink to it, and **whether the daemon
+  needs `streamer_enabled` true for a source it was handed is not known**. It is the first thing the
+  loopback will tell us on the Pi, because the log reports how many sinks are receiving RTP: a zero
+  there with the daemon otherwise healthy points at exactly this and nothing else.
 - **Whether 64 channels actually *stream*** — this opened the device and started recording. It did
   not verify continuity, underruns or that 64 channels of AES67 arrive. Tickets 09 and 10.
 - **The daemon's version** is not in this report. Provisioning cloned `master`; the commit should be
