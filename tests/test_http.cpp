@@ -52,6 +52,11 @@ httplib::Result get_retrying(httplib::Client* client, const std::string& path) {
   return httplib::Result(nullptr, httplib::Error::Connection);
 }
 
+httplib::Result post_json(httplib::Client* client, const std::string& path,
+                          const std::string& body) {
+  return client->Post(path, body, "application/json");
+}
+
 }  // namespace
 
 TEST_CASE(http_status_carries_the_engine_figures_and_the_preflight) {
@@ -147,6 +152,62 @@ TEST_CASE(http_status_says_exactly_what_is_wrong_with_no_daemon_and_no_link) {
   CHECK(page);
   CHECK_EQ(page->status, 200);
   CHECK(page->body.find("aes67-srt") != std::string::npos);
+
+  // A control request that cannot work is refused, naming the field.
+  httplib::Result impulse = client.Post("/api/egress/test-signal");
+  CHECK(impulse);
+  CHECK_EQ(impulse->status, 400);
+  CHECK(impulse->body.find("test_signal_channel") != std::string::npos);
+
+  server.stop();
+  engine.stop();
+}
+
+TEST_CASE(http_the_av_delay_is_adjustable_live_and_refused_when_impossible) {
+  Config config = http_config(18214, "loopback");
+  config.egress.test_signal_channel = 2;
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+  CHECK(engine.open(&error));
+  auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
+
+  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui");
+  CHECK(server.start(&error));
+  httplib::Client client("127.0.0.1", config.http_port);
+  // Warm the server up so the POST below is not racing its accept thread.
+  CHECK(get_retrying(&client, "/api/status"));
+
+  // A reasonable offset is accepted and shows up in the status.
+  httplib::Result set =
+      post_json(&client, "/api/egress/delay", R"({"delay_ms":250})");
+  CHECK(set);
+  CHECK_EQ(set->status, 200);
+  httplib::Result status = get_retrying(&client, "/api/status");
+  CHECK(status);
+  const nlohmann::json body = nlohmann::json::parse(status->body);
+  CHECK_NEAR(body["engine"]["egress_delay_ms"].get<double>(), 250.0, 0.05);
+
+  // Impossible offsets are refused *before* anything is applied, naming the field.
+  httplib::Result negative =
+      post_json(&client, "/api/egress/delay", R"({"delay_ms":-1})");
+  CHECK_EQ(negative->status, 400);
+  CHECK(negative->body.find("egress.delay_ms") != std::string::npos);
+  httplib::Result beyond =
+      post_json(&client, "/api/egress/delay", R"({"delay_ms":6000})");
+  CHECK_EQ(beyond->status, 400);
+  CHECK(beyond->body.find("egress.delay_ms") != std::string::npos);
+  httplib::Result wrong_type =
+      post_json(&client, "/api/egress/delay", R"({"delay_ms":"soon"})");
+  CHECK_EQ(wrong_type->status, 400);
+  CHECK(wrong_type->body.find("expected a number") != std::string::npos);
+  // And the good value is still what is applied: a refusal changed nothing.
+  CHECK_NEAR(engine.egress_delay_ms(), 250.0, 0.05);
+
+  // The test signal fires on the selected channel.
+  httplib::Result impulse = client.Post("/api/egress/test-signal");
+  CHECK(impulse);
+  CHECK_EQ(impulse->status, 200);
 
   server.stop();
   engine.stop();

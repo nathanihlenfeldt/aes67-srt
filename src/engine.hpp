@@ -197,9 +197,12 @@ class Engine {
   /**
    * Ask the delay line for a new A/V offset while audio runs.
    *
-   * Refuses one outside 0..5000 ms. This is the seam the control surface calls
-   * (tickets 13-14); it is not yet safe to call concurrently with the receive
-   * loop, which is that ticket's locking decision rather than this one's.
+   * **Safe to call from any thread, and that is why it posts rather than acts.**
+   * The delay line belongs to the receive loop; a control surface mutating it
+   * directly would be a data race with the loop reading it. This validates against
+   * the same 0..5000 ms ceiling the configuration does, records the request, and
+   * returns; the receive loop applies it on its next period. The requested value is
+   * published immediately, so the operator sees the number they dialled.
    */
   bool set_egress_delay_ms(double offset_ms, std::string* error);
 
@@ -207,9 +210,9 @@ class Engine {
    * Fire the impulse test signal on the channel `egress.test_signal_channel`
    * selects, on the next period.
    *
-   * The impulse is sample-accurate: it lands on exactly the egress frame the
-   * engine has reached, so two triggers through the same run are the same
-   * distance apart as the calls that fired them.
+   * Safe from any thread for the same reason as the offset: the request is
+   * recorded and the receive loop places the impulse at the exact egress frame it
+   * has reached when it gets there.
    */
   bool trigger_test_signal(std::string* error);
 
@@ -353,6 +356,17 @@ class Engine {
   std::atomic<double> published_egress_delay_ms_{0.0};
   std::atomic<double> published_clock_offset_ppm_{0.0};
   std::atomic<double> published_clock_ratio_{1.0};
+
+  /**
+   * Requests posted by the control surface's thread, consumed by the receive loop.
+   *
+   * The pending flag is cleared with `exchange`, so a request is applied exactly
+   * once; a second request arriving before the loop gets there overwrites the
+   * value, which is the right answer for a dial.
+   */
+  std::atomic<double> requested_egress_delay_ms_{0.0};
+  std::atomic<bool> egress_delay_pending_{false};
+  std::atomic<bool> test_signal_pending_{false};
 
   /**
    * The link statistics, which only the status thread fills. They are a block

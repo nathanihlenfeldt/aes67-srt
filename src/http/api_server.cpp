@@ -39,6 +39,20 @@ void reply_text(httplib::Response& response, int status,
   response.set_content(message, "text/plain");
 }
 
+/** Parse a JSON request body, setting |error| rather than throwing. */
+nlohmann::json parse_body(const httplib::Request& request, std::string* error) {
+  if (request.body.empty()) {
+    *error = "empty request body";
+    return nlohmann::json::object();
+  }
+  try {
+    return nlohmann::json::parse(request.body);
+  } catch (const std::exception& ex) {
+    *error = std::string("invalid JSON: ") + ex.what();
+    return nlohmann::json::object();
+  }
+}
+
 /**
  * The page served until the built web UI exists.
  *
@@ -62,6 +76,9 @@ const char* k_fallback_page = R"HTML(<!doctype html>
  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #ddd; vertical-align: top; }
  .ok { color: #0a7d28; } .bad { color: #b00020; font-weight: 600; }
  .num { font-variant-numeric: tabular-nums; }
+ .controls { margin: 1rem 0 2rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+ .controls input { width: 6rem; padding: .2rem .3rem; }
+ #controlmsg { color: #666; }
  code { background: #f4f4f4; padding: .1rem .3rem; border-radius: 3px; }
 </style>
 </head>
@@ -69,11 +86,35 @@ const char* k_fallback_page = R"HTML(<!doctype html>
 <h1>aes67-srt</h1>
 <p class="sub" id="version">loading…</p>
 <div id="root">loading…</div>
+<div class="controls">
+  <label>A/V delay (ms): <input id="delay" type="number" min="0" max="5000" step="0.1"></label>
+  <button onclick="setDelay()">Set</button>
+  <button onclick="triggerTestSignal()">Trigger test signal</button>
+  <span id="controlmsg"></span>
+</div>
 <script>
+async function setDelay() {
+  const value = parseFloat(document.getElementById('delay').value);
+  const r = await fetch('/api/egress/delay', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({delay_ms: value})
+  });
+  document.getElementById('controlmsg').textContent =
+    r.ok ? 'A/V delay set to ' + value + ' ms' : await r.text();
+}
+async function triggerTestSignal() {
+  const r = await fetch('/api/egress/test-signal', {method: 'POST'});
+  document.getElementById('controlmsg').textContent =
+    r.ok ? 'impulse fired' : await r.text();
+}
 async function poll() {
   try {
     const r = await fetch('/api/status');
     const s = await r.json();
+    const delayInput = document.getElementById('delay');
+    if (document.activeElement !== delayInput) {
+      delayInput.value = s.engine.egress_delay_ms;
+    }
     document.getElementById('version').textContent =
       s.name + ' ' + s.version + ' (' + s.build + '), ' + s.role + ' ' + s.mode +
       (s.peer ? ' to ' + s.peer : '');
@@ -244,6 +285,48 @@ void ApiServer::register_routes() {
         }
         reply_json(response, {{"lines", log().tail(static_cast<size_t>(lines))}});
       });
+
+  // ---- A/V alignment, live (ticket 14, issue #15) ------------------------
+  // The offset moves while audio runs, through the delay line's crossfade, and the
+  // impulse is something to line the audio up against. Both are refused with the
+  // field named, and neither blocks: the engine posts the request and the receive
+  // loop applies it on its next period.
+  svr->Post("/api/egress/delay", [this](const httplib::Request& request,
+                                        httplib::Response& response) {
+    std::string error;
+    const nlohmann::json body = parse_body(request, &error);
+    if (!error.empty()) {
+      reply_text(response, 400, error);
+      return;
+    }
+    if (!body.contains("delay_ms") || !body["delay_ms"].is_number()) {
+      reply_text(response, 400, "egress.delay_ms: expected a number");
+      return;
+    }
+    if (engine_ == nullptr) {
+      reply_text(response, 503, "the engine is not running");
+      return;
+    }
+    if (!engine_->set_egress_delay_ms(body["delay_ms"].get<double>(), &error)) {
+      reply_text(response, 400, error);
+      return;
+    }
+    reply_json(response, {{"ok", true}, {"delay_ms", engine_->egress_delay_ms()}});
+  });
+
+  svr->Post("/api/egress/test-signal",
+            [this](const httplib::Request&, httplib::Response& response) {
+              std::string error;
+              if (engine_ == nullptr) {
+                reply_text(response, 503, "the engine is not running");
+                return;
+              }
+              if (!engine_->trigger_test_signal(&error)) {
+                reply_text(response, 400, error);
+                return;
+              }
+              reply_json(response, {{"ok", true}});
+            });
 
   // ---- the UI ------------------------------------------------------------
   // The built front end wins when it is there; otherwise the built-in page still

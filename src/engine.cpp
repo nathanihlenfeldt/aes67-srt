@@ -523,6 +523,24 @@ bool Engine::play_one_period(std::string* error) {
  * would say it did.
  */
 bool Engine::write_period_to_device(std::string* error) {
+  // Requests posted by the control surface's thread are applied here, on the
+  // receive loop's own thread, before the period they affect. The exchange means a
+  // request is applied exactly once, and a newer one simply replaces an older one.
+  if (egress_delay_pending_.exchange(false)) {
+    std::string reason;
+    if (!delay_line_.set_offset_ms(requested_egress_delay_ms_.load(), &reason)) {
+      log().write(LogLevel::warn, "engine: egress delay refused: " + reason);
+    } else {
+      published_egress_delay_ms_.store(delay_line_.offset_ms());
+    }
+  }
+  if (test_signal_pending_.exchange(false)) {
+    std::string reason;
+    if (!test_signal_.trigger(egress_frames_, &reason)) {
+      log().write(LogLevel::warn, "engine: test signal not fired: " + reason);
+    }
+  }
+
   test_signal_.mix(rx_period_.data(), format_.period_frames, egress_frames_);
   if (!delay_line_.process(rx_period_.data(), rx_period_.data(),
                            format_.period_frames, error)) {
@@ -547,17 +565,28 @@ double Engine::egress_delay_ms() const {
 }
 
 bool Engine::set_egress_delay_ms(double offset_ms, std::string* error) {
-  if (!delay_line_.set_offset_ms(offset_ms, error)) {
-    return false;
+  // Validated here against the same ceiling the configuration uses, so a refusal
+  // can name the field before anything is posted; the receive loop applies it.
+  if (!(offset_ms >= 0.0) || offset_ms > k_max_egress_delay_ms) {
+    return fail(error, "egress.delay_ms: expected 0.." +
+                           std::to_string(k_max_egress_delay_ms) + " ms, got " +
+                           std::to_string(offset_ms) +
+                           " (audio can only be delayed, never advanced)");
   }
-  published_egress_delay_ms_.store(delay_line_.offset_ms());
+  requested_egress_delay_ms_.store(offset_ms);
+  egress_delay_pending_.store(true);
+  published_egress_delay_ms_.store(offset_ms);
   return true;
 }
 
 bool Engine::trigger_test_signal(std::string* error) {
-  // The next period, which is the one about to be written: a mark that landed in
-  // the past would be dropped by the queue rather than heard.
-  return test_signal_.trigger(egress_frames_, error);
+  if (!test_signal_.enabled()) {
+    return fail(error,
+                "egress.test_signal_channel is -1: no channel is selected for "
+                "the test signal");
+  }
+  test_signal_pending_.store(true);
+  return true;
 }
 
 double Engine::codec_delay_ms() const {
@@ -782,6 +811,9 @@ bool Engine::open(std::string* error) {
   published_delay_fraction_.store(0.0);
   published_clock_offset_ppm_.store(0.0);
   published_clock_ratio_.store(1.0);
+  requested_egress_delay_ms_.store(config_.egress.delay_ms);
+  egress_delay_pending_.store(false);
+  test_signal_pending_.store(false);
   {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     link_stats_available_ = false;
