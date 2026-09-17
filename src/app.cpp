@@ -109,6 +109,12 @@ void App::request_stop() {
 int App::run() {
   std::signal(SIGINT, handle_signal);
   std::signal(SIGTERM, handle_signal);
+  // SIGHUP is `systemctl reload`: a clean stop, after which the unit's
+  // Restart=always brings the appliance back with the file on disk. Reloading in
+  // place would have to re-open the link, rebuild the device and republish on the
+  // daemon -- which is a restart, and pretending otherwise is how a half-applied
+  // configuration happens.
+  std::signal(SIGHUP, handle_signal);
   // Reset for a second run in the same process (which is what a test does): the
   // flag is a file-scope global because a signal handler cannot be given one.
   stop_requested.store(false);

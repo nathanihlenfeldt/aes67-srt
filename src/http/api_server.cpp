@@ -76,8 +76,21 @@ bool write_atomically(const std::string& path, const std::string& text,
     }
   }
   if (std::rename(temporary.c_str(), path.c_str()) != 0) {
-    *error = "cannot replace " + path;
-    return false;
+    // A hardened systemd unit bind-mounts the configuration file itself writable
+    // and not its directory, and `rename` needs the directory. Try again with a
+    // plain truncating write: a configuration change the operator asked for must
+    // still land, and the alternative is a page that refuses everything.
+    std::remove(temporary.c_str());
+    std::ofstream direct(path, std::ios::trunc);
+    if (!direct.is_open()) {
+      *error = "cannot write " + path;
+      return false;
+    }
+    direct << text;
+    if (!direct.good()) {
+      *error = "error writing " + path;
+      return false;
+    }
   }
   return true;
 }

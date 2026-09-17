@@ -1,0 +1,70 @@
+[Unit]
+Description=aes67-srt AES67-to-SRT bridge
+Documentation=https://github.com/nathanihlenfeldt/aes67-srt
+After=network-online.target
+Wants=network-online.target
+# The AES67 streams and the PTP slave are provided by the daemon, so it should be
+# up first. It is not fatal when it is not: the appliance keeps retrying, and the
+# preflight it serves will say PTP is not locked.
+After=aes67-daemon.service
+Wants=aes67-daemon.service
+# A crash loop means something is really wrong (missing library, bad config): give
+# up after a few attempts instead of hammering, so `systemctl status` shows the
+# failure rather than "activating" for ever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/aes67-srt -c /etc/aes67-srt.conf
+# "Reload" is a clean restart, and that is a decision rather than a shortcut: the
+# link, the block mapping and the levels reopen sockets and rebuild the engine, so
+# they are restart-only by design (`pending_restart` in /api/status says which).
+# Restart=always brings the new configuration up in a second, and a signal that
+# stops the process is the one mechanism that cannot half-apply a configuration.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+
+# The audio thread needs real time scheduling; the control surface binds a high port.
+User=aes67-srt
+Group=aes67-srt
+SupplementaryGroups=audio
+AmbientCapabilities=CAP_SYS_NICE
+CapabilityBoundingSet=CAP_SYS_NICE
+
+# Access to the RAVENNA ALSA device owned by the Merging kernel module.
+DeviceAllow=char-alsa rw
+DeviceAllow=/dev/snd/ rw
+PrivateDevices=no
+
+# Hardening, kept in line with the aes67-daemon unit.
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+PrivateMounts=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+# The control surface saves configuration back to the file it came from, so that
+# path stays writable; StateDirectory is where a service user is allowed to write.
+# Both the file and its write-by-replace temporary are listed, because the rename
+# needs the target to be writable too (the leading '-' tolerates a missing file).
+ReadWritePaths=/var/lib/aes67-srt -/etc/aes67-srt.conf -/etc/aes67-srt.conf.tmp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+# Real-time scheduling is the whole point of CAP_SYS_NICE above.
+RestrictRealtime=no
+SystemCallArchitectures=native
+
+StateDirectory=aes67-srt
+LogsDirectory=aes67-srt
+
+[Install]
+WantedBy=multi-user.target
