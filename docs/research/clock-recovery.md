@@ -107,6 +107,10 @@ the best of three runs.
   site's PTP holds both ends to a common reference the whole problem shrinks. Measuring the real
   offset on two appliances is a five-minute job that would sharpen all of this. Ticket 09, where
   two appliances exist on a real link.
+  **Partly measured 2026-09-17** — the *arrival spread* is now a number, on a routed path with 42 ms
+  of ping jitter: 14.83 µs, typically. See "The arrival spread" at the end of this document. The
+  crystal offset itself is still unmeasured, because the estimator that would give it needs
+  robustness rather than the median the probe prints.
 - **Where the drift budget sits relative to the 120 ms latency**: whether corrections happen
   continuously or inside a bounded window, and what happens to the figure the operator is shown
   while they do. **Increment 1 narrowed this**: the level is quantised to a whole period, so a 1 ppm
@@ -345,16 +349,36 @@ So the cheapest converter is not "slightly worse": it is **2.2 dB down at 19 kHz
 21 kHz**, which is the top of the audible band taken away, and it is exactly what an 80%-of-Nyquist
 passband means. `sinc_best` is flat to 22 kHz and costs 6.3× the cheapest.
 
-**Decision: `sinc_medium`, and it is the default.** Scaling the Pi's measured 11.27% of one core (at
-`sinc_fastest`, 64 channels, ticket 18) by the measured ratios gives roughly **25% of one core for 64
-channels** — affordable on a four-core appliance — and it buys a passband flat to 21 kHz instead of one
-that loses the top of the band. `sinc_best` at ~70% of a core is not, when phase 2's codec may want
-40–70% for itself. The converter is configuration, not a compile-time choice, so a site that needs the
-last kilohertz can have it.
+**Decision: `sinc_medium`, and it is the default — now measured on the appliance, not extrapolated.** The
+first version of this section scaled the laptop's ratios by ticket 18's `SINC_FASTEST` figure and called
+`sinc_medium` "~25% of one core". That was an extrapolation across two CPUs, so it was measured on the
+Pi 5 itself, 64 channels, governor `performance`, best of three iterations per converter, two runs
+agreeing to 0.05%:
 
-**The ratios are from this machine, not the Pi.** Only the *shape* of the decision is portable: the
-ratios between converters depend on how NEON-friendly each kernel is, and the absolute figure remains
-the Pi's measurement. The bandwidth figures are physics and do not move.
+| Converter | Time for 10 s of 64-channel audio | Versus realtime | **% of one Pi 5 core** |
+|---|---|---|---|
+| `sinc_fastest` | 1127 ms | 8.87× | **11.27%** |
+| `sinc_medium` **← the default** | 2607 ms | 3.84× | **26.07%** |
+| `sinc_best` | 8358 ms | **1.20×** | **83.58%** |
+
+So the extrapolation was right within 4% — and `sinc_best` is *worse* than it guessed. The three things
+that matter:
+
+- **26% of one core for the audible band is affordable** on a four-core appliance, and `fastest`'s 11%
+  would buy the wrong thing: a passband that loses the top octave. The decision stands.
+- **`sinc_best` is out on measurement, not on taste**: at 1.20× realtime it would saturate a whole core
+  to keep up, leaving nothing for the ALSA path, the daemon, the transport or the UI — and phase 2's
+  codec may want 40–70% of a core by itself.
+- **The ratios travel, the absolute figures do not.** On this laptop the same probe gave 1.00 : 2.17 :
+  6.35; on the Pi it is 1.00 : 2.31 : 7.41. That is close enough that the laptop's *shape* predicted the
+  Pi's decision — which is worth knowing for the next quality-versus-CPU question, and not worth
+  pretending is an exact transfer.
+
+**The clock module's tests run on the appliance too.** The whole suite — 126 cases on Linux, including the
+resampler and the receive-path join — passes on the Pi 5 in **1m50s**, with no skips, and every number in
+these three increments reproduces there **bit for bit**: the 10 ppm convergence (9.94305), the zero-lag
+delay with its 3.94584e-07 residual, the 48-frame working room, the 15 ppm measured rate. The library's
+behaviour is not an x86 artefact, which is what an ARM with NEON paths could have made it.
 
 **Reproduce:** `./build/tests/aes67-srt-tests` (`clock_` cases). 125 tests; the resampler's cases cost
 about 6 seconds, most of it the 200,000-period rate measurement and the converter sweep.
@@ -400,3 +424,49 @@ That distinction is written into the test because the engine will need it.
 real link's arrival pattern. Everything above runs on integer-exact simulated clocks with a distribution
 I chose. That is the hardware session's job (ticket 09's two appliances, #18), and it is why no ticket
 here is "done" on CI alone.
+
+## The arrival spread, measured on a real path, 2026-09-17
+
+`scripts/measure-link-spread.sh`, new: two machines, one running `listen` and one running `send`, both
+using libsrt directly rather than this repository's transport, with the same options
+`src/transport/link.cpp` sets (live mode, message API, 120 ms latency both ways, 1316-byte payload cap,
+TLPKTDROP off) and one frame's worth of messages per millisecond — this appliance's real shape and rate.
+
+**This is the figure the section above twice calls decisive and never had**: what SRT delivers to a
+receiver, which is what a direct rate estimate would have to work against. Raspberry Pi 5 as the sender,
+a laptop as the receiver, **two routed subnets** with 43 ms of round trip and **42 ms of ping jitter** —
+harsher than a LAN and less harsh than the open internet. 120 s, 119,879 frames:
+
+| Figure | Measured |
+|---|---|
+| median interval | 1000.0 µs |
+| **typical arrival spread** (robust sd, 1.4826 x MAD) | **14.83 µs** |
+| naive sd | 71.2 µs — dominated by the outliers, and the wrong figure to use |
+| frames more than 60 µs off the schedule | **17%** |
+| whole-period slips | **0.05%** (42 near-zero and 20 longer than 1.5 ms) |
+| the sender's own scheduler | sd 2.5 µs, worst 553 µs — so this is the link, not the Pi |
+
+**SRT's TSBPD does what this document hoped it might.** 42 ms of network round-trip jitter arrives at the
+application as a 15 µs spread, in a tight core around one millisecond. The network's jitter is *not* what
+the clock module has to tolerate, and that is now measured rather than assumed.
+
+**What it changes about the direct estimate.** The window arithmetic above needs `sigma`, and both figures
+that matter are different from what this document assumed:
+
+- with a typical spread of 15 µs rather than the 1 ms it called "the optimistic case", a slope fit
+  resolves **10 ppm in about a third of a second and 1 ppm in about 1.4 seconds** — against the level
+  loop's measured 24 minutes for 10 ppm. As an *accelerator*, that is worth having.
+- **but a plain least-squares fit would be fitting the slips.** 17% of frames sit between 60 µs and half a
+  millisecond off the schedule, and one in two thousand slips a whole period; those dominate a
+  squared-error fit, which is exactly why this probe's naive sd (71 µs) is five times its robust one. The
+  work in a direct estimate is the robust estimator, not the arithmetic — and nobody has built one.
+
+**Correction to this document's own formula.** The section above writes the slope error as
+`1.1e-4 * sigma / T^1.5` with `sigma` in seconds, which cannot be right: that coefficient already
+contains `sigma = 1 ms`, and the formula with sigma left in reads `0.11 * sigma / T^1.5`. Its table was
+computed correctly; its text was not.
+
+**What it does not prove.** One path, and a routed one; both ends are general-purpose machines and the
+sender is a C loop rather than the engine, so the sender-side figures belong to that loop. A *real* WAN
+pair — ticket #10, two appliances — is what turns this into a field figure, and the script exists so that
+session can repeat it in two minutes.
