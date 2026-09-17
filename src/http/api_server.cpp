@@ -63,34 +63,32 @@ nlohmann::json parse_body(const httplib::Request& request, std::string* error) {
 bool write_atomically(const std::string& path, const std::string& text,
                       std::string* error) {
   const std::string temporary = path + ".tmp";
+  bool wrote_temporary = false;
   {
     std::ofstream out(temporary, std::ios::trunc);
-    if (!out.is_open()) {
-      *error = "cannot write " + temporary;
-      return false;
-    }
-    out << text;
-    if (!out.good()) {
-      *error = "error writing " + temporary;
-      return false;
+    if (out.is_open()) {
+      out << text;
+      wrote_temporary = out.good();
     }
   }
-  if (std::rename(temporary.c_str(), path.c_str()) != 0) {
-    // A hardened systemd unit bind-mounts the configuration file itself writable
-    // and not its directory, and `rename` needs the directory. Try again with a
-    // plain truncating write: a configuration change the operator asked for must
-    // still land, and the alternative is a page that refuses everything.
-    std::remove(temporary.c_str());
-    std::ofstream direct(path, std::ios::trunc);
-    if (!direct.is_open()) {
-      *error = "cannot write " + path;
-      return false;
-    }
-    direct << text;
-    if (!direct.good()) {
-      *error = "error writing " + path;
-      return false;
-    }
+  if (wrote_temporary && std::rename(temporary.c_str(), path.c_str()) == 0) {
+    return true;
+  }
+  // The write-and-rename needs the *directory* writable, and a hardened systemd
+  // unit bind-mounts the configuration file itself instead. That case cannot even
+  // create the temporary, so fall through to a plain truncating write: a
+  // configuration change the operator asked for must still land, and the
+  // alternative is a page that refuses every save on an installed appliance.
+  std::remove(temporary.c_str());
+  std::ofstream direct(path, std::ios::trunc);
+  if (!direct.is_open()) {
+    *error = "cannot write " + path;
+    return false;
+  }
+  direct << text;
+  if (!direct.good()) {
+    *error = "error writing " + path;
+    return false;
   }
   return true;
 }
