@@ -227,6 +227,19 @@ one.
 The earlier note in this document's spirit ("what a timeout of zero means is not recorded") is now
 closed: it is recorded here, from the primary source and confirmed by the measurement.
 
+**Confirmed on the routed path, 2026-09-17, with the fix in place.** The Pi as caller and the laptop
+as listener, two routed subnets, 43 ms round trip, one 8-channel block, fake daemon and null audio,
+50 seconds. Both directions delivered the whole rate: listener **49,838 sent / 50,004 received**,
+caller **50,004 sent / 49,803 received**, `0 refused`, `pktRcvDropTotal 0`, and **zero playout
+overruns** at either end. `mbpsRecvRate` was 9.9 Mbit/s both ways and the SRT receive buffer sat at
+0–1 ms, where before the fix it had climbed to 119 ms and stayed there. The same run before the fix
+had delivered 2,091 of 49,875 frames and overrun the playout buffer to its 1,001 ms capacity.
+
+The playout level had not settled when the run ended — 447 ms at the listener with its correction at
+the +200 ppm clamp, 88 ms at the caller with −90.8 ppm — which is expected rather than a fault: the
+level loop's period is 2,000 s, and the clock research records that a 10 ppm offset takes ~24 minutes
+to converge. A short run measures throughput, not the clock; the ppm figure needs the ~20 minute run.
+
 ## Bonding and groups: not a v1 path, and not a drop-in later
 
 - **It is a build-time feature.** `option(ENABLE_BONDING "Should the bonding functionality be
