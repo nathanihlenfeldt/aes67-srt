@@ -463,8 +463,19 @@ measured bit-exact. **That is the cost of the clock, stated rather than discover
 `clock_offset_ppm()`, `clock_ratio()`, `silence_periods()`. The *trend* the criterion asks for is a
 difference between polls, so it belongs to whoever polls — the control surface — and not here.
 
-**Still not measured: any of this on hardware.** Everything above is a process-local loopback, and the Pi
-has run the engine but never with the clock in it.
+**Still not measured: the clock through the RAVENNA device, and over a network.** What *is* measured on
+the appliance as of the same day: the suite runs there — 127 cases, no skips, 1m59s — and the engine
+loopback inside it puts audio across a real SRT link on the Pi with the real resampler in the path,
+reporting the same figures as the laptop **to eight significant digits**:
+
+```
+engine loopback through the clock: 300 periods of audio, 119 of silence,
+                                   delay 118 ms, correction -0.0559218 ppm
+```
+
+So the clock's arithmetic is architecture-independent, and the engine carries clocked audio on the target.
+What has not happened is the same audio arriving from a *device* (the daemon's RAVENNA path, ticket 08's
+hardware criterion) or across a *network* rather than the loopback interface — ticket #10.
 
 ## The arrival spread, measured on a real path, 2026-09-17
 
