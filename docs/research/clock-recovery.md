@@ -250,7 +250,11 @@ asking.**
 
 ### What it measures, at the gains it ships with
 
-Loop period 2000 s, damping 0.8, target 120 ms, from a buffer primed to 120 ms:
+Loop period 2000 s, damping 0.8, target 120 ms, from a buffer primed to 120 ms. **Every figure below is
+against the stand-in plant** — a resampler model inside the test that consumes `frames x ratio` — which
+is fast enough to run four hours of audio and is **not** the real library. The real library is lumpier (48
+or 96 input frames per pull, with its own working room), so it gets its own measurement, for thirty
+minutes rather than four hours, in "The join, measured" below. Two claims, two instruments:
 
 | Run | Result |
 |---|---|
@@ -262,14 +266,16 @@ Loop period 2000 s, damping 0.8, target 120 ms, from a buffer primed to 120 ms:
 | 1 h at +10 ppm through **0–10 ms of arrival jitter** | level 111–129 ms (it floats with the spread), correction **9.69 ppm**, every period byte-exact |
 | a target of 400 ms against a 120 ms buffer | correction held inside its clamp, level 120 → 401 ms, **nothing dropped** |
 
-**Jitter is the measurement that matters most here, because it is the reason this design was
-chosen.** The section above records that a direct estimate needs an 11-second window to resolve
-10 ppm at 5 ms of arrival jitter — and 0–10 ms is exactly the spread whose `sigma` nobody has
-measured. Against that, the loop on the level tracked the offset to within 0.5 ppm, in order, with
-every period byte-exact. **A loop that measures no time cannot be fooled by time.** That claim was the
-whole argument for building it this way, and it is now a test rather than a claim. What the model
-does *not* reproduce is a spiky distribution — this jitter is uniform in [0, spread] — so a real link
-with bursts remains the hardware session's question.
+**The jitter run is the one that speaks to why this design was chosen** — the section above records
+that a direct estimate needs an 11-second window to resolve 10 ppm at 5 ms of arrival jitter, and
+0–10 ms is the spread whose `sigma` nobody has measured. What the run *shows* is narrower than that
+argument: the conversion found the offset to within 0.5 ppm with every period byte-exact and in order
+while the level moved with the spread. **It does not prove the loop is immune to jitter** — "a loop
+that measures no time cannot be fooled by time" is an argument about the design, and a test cannot
+confirm an argument. What it does show is the thing a control loop has to survive and often does not:
+a *jittered measurement* — the level moving by ±9 ms as the link delivers in bursts — does not make
+the correction hunt. Read it as that and no more. The jitter source is deterministic and
+platform-independent, so at least the claim is repeatable.
 
 ### Two findings for the tickets that follow
 
@@ -356,3 +362,41 @@ about 6 seconds, most of it the 200,000-period rate measurement and the converte
 **What increment 3 does not include.** The engine: nothing yet carries a frame from a real device
 through this buffer, so the clock is complete as a module and not yet joined to the receive path. That
 join is what makes the delay figure continuous for ticket 12's UI, and it is the next slice.
+
+## The join, and the circularity it exposed, measured 2026-09-17
+
+`tests/test_clock_receive_path.cpp`, written because a review of the three increments above found the
+hole: **the pieces had never met.** Each had been tested against a *model* of the others. The loop's
+simulation drove a stand-in that consumed `frames x ratio` of input per output period — which is my
+assumption about what a resampler does, written *inside the test* — and the resampler's tests set a
+ratio by hand and never asked the control for one. So the control's unit convention was asserted only
+against my model of a resampler, and the resampler's reciprocal only against my assumption about the
+control. The relation that matters, `src_ratio = 1 / control.ratio()`, had never been exercised *across*
+the two modules — and the mutant I ran in increment 3 was inside `resampler.cpp`, i.e. one file, so it
+did not cover the handoff either.
+
+**That is circular verification: N tests, one assumption.** With the real library as the plant, thirty
+minutes of simulated audio, four channels:
+
+| Run | Result |
+|---|---|
+| 30 min, sender **+10 ppm** | level **119 → 121 ms**, band **±2 ms**, correction **9.94 ppm** |
+| 30 min, receiver **+10 ppm** | level **119 → 119 ms**, band ±2 ms, correction **−9.94 ppm** |
+
+with the ledger balancing to the frame across the boundary (86,395,056 frames handed over = 86,395,056
+consumed + 0 pending), no underruns, no short pulls, nothing dropped, and the audio coming out at unity.
+So the loop holds the level against the thing it will actually drive, and the correction converges to
+within 0.06 ppm of the truth in half an hour.
+
+**Two assertions the first version of that test got wrong, and what they taught.** It checked that the
+played *positions* advanced by exactly one period, and that every output period's *bytes* matched the
+sender's for that position. Both are false in a resampling path: the input position advances by the
+ratio's worth of frames (48, 96, occasionally less), and the samples have been through an interpolating
+filter. Neither is a fault. **The correct loss metric across this path is the ledger**, and the position
+is only worth checking for monotonicity — audio played twice would show as a position going backwards.
+That distinction is written into the test because the engine will need it.
+
+**What six of these modules' tests cannot reach.** The physics: two real crystals, a real PTP lock, a
+real link's arrival pattern. Everything above runs on integer-exact simulated clocks with a distribution
+I chose. That is the hardware session's job (ticket 09's two appliances, #18), and it is why no ticket
+here is "done" on CI alone.

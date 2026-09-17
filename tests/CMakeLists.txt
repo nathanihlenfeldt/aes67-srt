@@ -6,6 +6,7 @@ add_executable(aes67-srt-tests
   test_clock_drift.cpp
   test_clock_playout.cpp
   test_clock_ratio.cpp
+  test_clock_receive_path.cpp
   test_clock_resampler.cpp
   test_clock_resampler_quality.cpp
   test_commissioning.cpp
