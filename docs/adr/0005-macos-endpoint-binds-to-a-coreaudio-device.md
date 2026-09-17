@@ -1,9 +1,27 @@
 # ADR 0005: The macOS endpoint binds to a CoreAudio device, and ships no driver
 
-Status: **proposed** (2026-09-16), at the owner's request for an architecture. Nothing is built from
-it yet, and the reasoning below is the argument for adopting it rather than a report of something
-done. The product itself is in `docs/ROADMAP.md`. **It is not to be started until the appliance's v1
-is complete** — the owner's sequencing decision, recorded there.
+Status: **accepted** (2026-09-17). Adopted by the owner when this product was started; the reasoning was
+written on 2026-09-16 as a proposal and is unchanged.
+
+> **Adoption, and the sequencing override (2026-09-17, the owner's decision).** Two things were decided
+> together.
+>
+> 1. **The sequencing is overridden.** ADR 0004 and `docs/ROADMAP.md` recorded that this product would
+>    not start until the appliance's v1 was complete, including its hardware acceptance. With **one**
+>    appliance rather than two, the Mac endpoint is the product that can be built and proved from here,
+>    so it starts now. The consequence is accepted knowingly: **the core is extended before it has been
+>    through real hardware a second time**, and any change made for this product lands on the appliance
+>    too. The appliance's remaining hardware items (#10, #11, #16's clean-Pi run) are deferred, not
+>    closed.
+> 2. **v1 binds to an existing CoreAudio device — BlackHole — and ships no driver**, exactly as the
+>    Decision below says. The owner considered the alternative (our own `AudioServerPlugin`) and chose
+>    to reach it **later**: a device of our own is what the product ultimately wants, and the deferred
+>    option below is not rejected, but it costs a privileged install, a signed and notarised bundle, and
+>    a realtime path across the `coreaudiod` boundary — none of which is worth paying before the bridge
+>    carries audio at all.
+>
+> The consequences section below is where the BlackHole dependency and the duplex-channel question are
+> already written down.
 
 ## Context
 
@@ -36,7 +54,8 @@ single-producer/single-consumer rings of 32-bit float, one per direction.
 - The **resampler** (ADR 0003) is instantiated on the receive path only.
 
 A virtual device of this project's own — a thin `AudioServerPlugin` with shared-memory rings — is
-deferred, not rejected. It would be a second implementation of the same seam.
+deferred, not rejected. It would be a second implementation of the same seam, and the owner's decision
+is to reach it later (see the adoption note above).
 
 ## Reasoning
 
@@ -61,7 +80,7 @@ The self-contained product, and the right one to reach *second*. It moves the re
 another process, adds shared-memory synchronisation across a process boundary, requires codesigning
 and notarisation this project has never done, and — because the plugin is loaded by `coreaudiod` —
 turns a fault in our code into a fault in every application's audio. All of that before the first
-version has proved it can carry audio at all.
+version has proved it can carry audio at all. (The owner's later step: reach it once the bridge works.)
 
 ## Rejected: no virtual device, playing to the built-in output
 

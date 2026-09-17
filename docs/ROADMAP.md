@@ -132,6 +132,13 @@ stops being a style preference and becomes a constraint on every future commit.
 
 ### Sequencing: the appliance is finished first
 
+> **Overridden 2026-09-17, by the owner.** With **one** appliance rather than two, the Mac endpoint is
+> the product that can actually be built and proved from here, so it starts now (ADR 0005 carries the
+> decision and the consequence). The paragraph below is kept because its reasoning is still true: the
+> core is being extended before its hardware acceptance is complete, and a change made for the Mac
+> product lands on the appliance too. The appliance's remaining hardware items (#10, #11, #16's
+> clean-Pi run) are deferred, not closed.
+
 **Decided 2026-09-16: none of this is started until the appliance's v1 is complete** — phase 1's
 tickets closed, including its hardware acceptance rather than deferring it.
 

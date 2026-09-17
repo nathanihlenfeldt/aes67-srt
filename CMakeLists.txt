@@ -174,6 +174,7 @@ set(AES67_SRT_SOURCES
   src/aes67/fake_daemon_client.cpp
   src/app.cpp
   src/audio/backend.cpp
+  src/audio/float_ring.cpp
   src/audio/levels.cpp
   src/audio/null_backend.cpp
   src/clock/playout_buffer.cpp

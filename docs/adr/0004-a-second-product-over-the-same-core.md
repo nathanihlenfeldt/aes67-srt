@@ -84,3 +84,6 @@ backend to the core that exists.
   the constraint above is already satisfied by the code as it stands, and **the product itself waits
   until the appliance's v1 is complete** — the owner's sequencing decision, recorded in
   `docs/ROADMAP.md`. The appliance is what proves this core against real hardware, and it goes first.
+  **Amended 2026-09-17: the owner overrode the sequencing** (ADR 0005 records it) — with one appliance
+  rather than two, the Mac endpoint starts now, and the constraint at the top of this ADR is what keeps
+  that from costing the appliance a rewrite.
