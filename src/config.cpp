@@ -385,15 +385,19 @@ bool Config::validate(std::string* reason) const {
                             link.role + "\"");
   }
   const std::string mode = to_lower(link.mode);
-  if (mode != "caller" && mode != "listener" && mode != "rendezvous") {
+  if (mode != "caller" && mode != "listener" && mode != "rendezvous" &&
+      mode != "loopback") {
     return fail(reason,
-                "link.mode: expected \"caller\", \"listener\" or "
-                "\"rendezvous\", got \"" +
+                "link.mode: expected \"caller\", \"listener\", \"rendezvous\" or "
+                "\"loopback\", got \"" +
                     link.mode + "\"");
   }
   std::string peer_host;
   int peer_port = 0;
-  if (mode != "listener" && !split_host_port(link.peer, &peer_host, &peer_port)) {
+  // A listener waits for someone to arrive and a loopback has no peer at all, so
+  // neither may be required to name one.
+  if (mode != "listener" && mode != "loopback" &&
+      !split_host_port(link.peer, &peer_host, &peer_port)) {
     return fail(reason, "link.peer: expected host:port for mode \"" + mode +
                             "\", got \"" + link.peer + "\"");
   }

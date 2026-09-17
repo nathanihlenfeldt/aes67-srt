@@ -127,6 +127,28 @@ TEST_CASE(config_accepts_a_listener_with_no_peer) {
   CHECK(aes67_srt::parse_config(document.dump(), &config, &reason));
 }
 
+TEST_CASE(config_accepts_a_loopback_with_no_peer) {
+  // The in-process loopback has no peer to name: it is this process's own byte
+  // pipe, which is what lets the appliance run end to end with nothing attached.
+  json document = sample_document();
+  document["link"]["mode"] = "loopback";
+  document["link"]["peer"] = "";
+  aes67_srt::Config config;
+  std::string reason;
+  CHECK(aes67_srt::parse_config(document.dump(), &config, &reason));
+  CHECK_EQ(config.link.mode, std::string("loopback"));
+}
+
+TEST_CASE(config_refuses_a_mode_it_does_not_have) {
+  json document = sample_document();
+  document["link"]["mode"] = "peer-to-peer";
+  const std::string reason = refusal(document);
+  CHECK(names(reason, "link.mode"));
+  // The message lists what *is* accepted, so a typo is answered with the set of
+  // right answers rather than only with the wrong one.
+  CHECK(reason.find("loopback") != std::string::npos);
+}
+
 TEST_CASE(config_refuses_a_passphrase_that_is_too_short) {
   json document = sample_document();
   document["link"]["passphrase"] = "short";

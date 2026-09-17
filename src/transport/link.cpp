@@ -2,6 +2,9 @@
 
 #include <chrono>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <vector>
 
 #include "log.hpp"
 #include "util.hpp"
@@ -51,6 +54,16 @@ bool fail(std::string* error, const std::string& message) {
   return false;
 }
 
+/**
+ * How many messages the loopback will hold before it refuses to take more.
+ *
+ * A frame is eight messages, so this is a quarter-second of audio at 1 ms
+ * frames — far more than any correctly wired loopback ever holds, and small
+ * enough that a loopback nothing is reading from fails loudly instead of
+ * quietly consuming the machine.
+ */
+constexpr size_t k_loopback_max_messages = 2048;
+
 }  // namespace
 
 struct Link::Impl {
@@ -62,6 +75,23 @@ struct Link::Impl {
   std::chrono::steady_clock::time_point opened_at;
   std::string peer;
   std::string mode;
+
+  /**
+   * Loopback mode's pipe: what `send_message` has written and `receive_message`
+   * has not read yet.
+   *
+   * A mutex is enough here where a real transport would need a lock-free queue.
+   * The two ends are this process's own threads, nothing realtime is on either
+   * side of it, and a message copy is microseconds — so the simplest correct
+   * thing is the right thing, and the comment says so rather than leaving the
+   * next reader to wonder whether it was an oversight.
+   *
+   * Bounded, and it *refuses* when full instead of growing: a loopback nobody is
+   * receiving from is a bug in whoever wired it up, and eating the machine's
+   * memory to hide it would be the wrong failure.
+   */
+  std::mutex loopback_mutex;
+  std::deque<std::vector<uint8_t>> loopback_queue;
 };
 
 Link::Link() : impl_(new Impl()) {}
@@ -102,6 +132,12 @@ void Link::close() {
   impl_->opened = false;
   impl_->peer.clear();
   impl_->mode.clear();
+  {
+    // Drop whatever the loopback was holding: a closed link that hands back the
+    // previous session's messages on reopening would be a baffling bug to chase.
+    std::lock_guard<std::mutex> lock(impl_->loopback_mutex);
+    impl_->loopback_queue.clear();
+  }
 }
 
 bool Link::is_open() const {
@@ -133,21 +169,44 @@ std::string Link::peer_description() const {
 }
 
 bool Link::open(const Config& config, std::string* error) {
-#if !AES67_SRT_WITH_SRT
-  (void)config;
-  return fail(error, unavailable_reason());
-#else
   if (impl_->opened) {
     return fail(error, "the link is already open");
   }
-  ensure_started();
 
   const std::string mode = to_lower(config.link.mode);
-  if (mode != "caller" && mode != "listener" && mode != "rendezvous") {
+  if (mode != "caller" && mode != "listener" && mode != "rendezvous" &&
+      mode != "loopback") {
     return fail(error,
-                "link.mode: expected caller, listener or rendezvous; got \"" +
+                "link.mode: expected caller, listener, rendezvous or loopback; "
+                "got \"" +
                     config.link.mode + "\"");
   }
+
+  // Loopback is answered before the build-without-libsrt refusal below: it is
+  // our own byte pipe in our own process, so a build with no libsrt can still
+  // run the whole audio path in fake mode. Making that a property of this class
+  // rather than of the library is what lets a laptop with nothing installed
+  // exercise the appliance end to end.
+  if (mode == "loopback") {
+    {
+      std::lock_guard<std::mutex> lock(impl_->loopback_mutex);
+      // A link that was closed and reopened must not hand back the old
+      // session's messages.
+      impl_->loopback_queue.clear();
+    }
+    impl_->mode = mode;
+    impl_->peer = "(in-process)";
+    impl_->opened = true;
+    impl_->opened_at = std::chrono::steady_clock::now();
+    log().write(LogLevel::warn,
+                "the transport is a loopback: nothing leaves this machine");
+    return true;
+  }
+
+#if !AES67_SRT_WITH_SRT
+  return fail(error, unavailable_reason());
+#else
+  ensure_started();
 
   SRTSOCKET socket = srt_create_socket();
   if (socket == SRT_INVALID_SOCK) {
@@ -285,6 +344,19 @@ bool Link::send_message(const uint8_t* data, size_t size, std::string* error) {
                            "-byte ceiling SRT live mode allows (fragment the "
                            "frame first)");
   }
+  if (impl_->mode == "loopback") {
+    std::lock_guard<std::mutex> lock(impl_->loopback_mutex);
+    if (impl_->loopback_queue.size() >= k_loopback_max_messages) {
+      // Refused rather than queued: a loopback nobody is receiving from is a
+      // wiring mistake, and the honest report is a message the caller can act
+      // on rather than memory that grows until the appliance dies.
+      return fail(error, "the loopback is holding " +
+                             std::to_string(impl_->loopback_queue.size()) +
+                             " messages already: nothing is receiving on it");
+    }
+    impl_->loopback_queue.emplace_back(data, data + size);
+    return true;
+  }
 #if !AES67_SRT_WITH_SRT
   return fail(error, unavailable_reason());
 #else
@@ -314,6 +386,22 @@ bool Link::receive_message(std::vector<uint8_t>* buffer, bool* timed_out,
   if (timed_out != nullptr) {
     *timed_out = false;
   }
+  if (impl_->mode == "loopback") {
+    std::lock_guard<std::mutex> lock(impl_->loopback_mutex);
+    if (impl_->loopback_queue.empty()) {
+      // Nothing waiting is what `timed_out` is for, and the caller's loop has to
+      // be able to tell a quiet loopback from a broken one. There is no waiting
+      // here: an in-process pipe either has a message or it does not, and
+      // sleeping for the configured timeout would be pretending to be a network.
+      if (timed_out != nullptr) {
+        *timed_out = true;
+      }
+      return false;
+    }
+    *buffer = std::move(impl_->loopback_queue.front());
+    impl_->loopback_queue.pop_front();
+    return true;
+  }
 #if !AES67_SRT_WITH_SRT
   return fail(error, unavailable_reason());
 #else
@@ -342,6 +430,15 @@ bool Link::receive_message(std::vector<uint8_t>* buffer, bool* timed_out,
 bool Link::stats(LinkStats* out, std::string* error) const {
   if (out == nullptr) {
     return fail(error, "no statistics to fill");
+  }
+  if (impl_->mode == "loopback") {
+    // Refused rather than filled with zeroes. The rule this class states is that
+    // it fails rather than returning plausible numbers, and a loopback has no
+    // RTT, no bandwidth and no loss to report — a status page showing 0.0 ms RTT
+    // for a link that does not exist is worse than one showing nothing.
+    return fail(error,
+                "there are no link statistics: the transport is a loopback, not "
+                "a network");
   }
 #if !AES67_SRT_WITH_SRT
   return fail(error, unavailable_reason());

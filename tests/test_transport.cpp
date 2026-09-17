@@ -17,14 +17,18 @@ using aes67_srt::transport::Link;
 using aes67_srt::transport::LinkStats;
 
 /**
- * Configs that can actually come up on loopback.
+ * Configurations that can actually come up on localhost.
+ *
+ * Note the name: these are the *socket* tests, which happen to use 127.0.0.1 as
+ * the peer. `link.mode = "loopback"` is a different thing entirely — no socket,
+ * no port, no library — and has its own helper and its own tests further down.
  *
  * Every test uses its own ports: two SRT connections cannot share one, and a
  * previous test's socket lingers long enough to matter.
  */
-aes67_srt::Config loopback_config(const std::string& mode, int local_port,
-                                  const std::string& peer,
-                                  const std::string& passphrase = std::string()) {
+aes67_srt::Config localhost_config(const std::string& mode, int local_port,
+                                   const std::string& peer,
+                                   const std::string& passphrase = std::string()) {
   aes67_srt::Config config;
   config.link.mode = mode;
   config.link.role = "duplex";
@@ -32,6 +36,17 @@ aes67_srt::Config loopback_config(const std::string& mode, int local_port,
   config.link.peer = peer;
   config.link.passphrase = passphrase;
   config.link.latency_ms = 120;
+  config.audio.channels = 8;
+  config.link.blocks = 1;
+  return config;
+}
+
+/** A configuration for the in-process loopback: no socket, so no peer. */
+aes67_srt::Config in_process_config(int local_port) {
+  aes67_srt::Config config;
+  config.link.mode = "loopback";
+  config.link.role = "duplex";
+  config.link.local_port = local_port;
   config.audio.channels = 8;
   config.link.blocks = 1;
   return config;
@@ -146,6 +161,157 @@ TEST_CASE(transport_refuses_a_message_srt_could_not_carry) {
   CHECK(contains(error, "fragment the frame first"));
 }
 
+/**
+ * Drain everything the loopback is holding, reassembled into frames.
+ *
+ * Terminates on the first quiet receive, which for an in-process pipe means
+ * there is nothing left — unlike a socket, where a quiet moment means waiting.
+ */
+std::vector<std::vector<uint8_t>> drain_frames(Link* link) {
+  std::vector<std::vector<uint8_t>> frames;
+  aes67_srt::wire::Reassembler reassembler;
+  std::string error;
+  for (int guard = 0; guard < 100000; ++guard) {
+    std::vector<uint8_t> message;
+    bool timed_out = false;
+    if (!link->receive_message(&message, &timed_out, &error)) {
+      if (timed_out) {
+        break;
+      }
+      test::report_failure("receive_message", __FILE__, __LINE__, error);
+      break;
+    }
+    if (!reassembler.feed(message.data(), message.size(), &error)) {
+      test::report_failure("reassembler.feed", __FILE__, __LINE__, error);
+      break;
+    }
+  }
+  while (reassembler.frame_ready()) {
+    std::vector<uint8_t> frame;
+    if (!reassembler.take_frame(&frame, &error)) {
+      test::report_failure("take_frame", __FILE__, __LINE__, error);
+      break;
+    }
+    frames.push_back(std::move(frame));
+  }
+  return frames;
+}
+
+// ---------------------------------------------------------------------------
+// Loopback mode. Deliberately NOT guarded by skip_without_srt: the whole point
+// of the mode is that the audio path can be exercised on a machine with nothing
+// installed, so a build without libsrt skipping these would skip exactly the
+// case they exist for.
+// ---------------------------------------------------------------------------
+
+TEST_CASE(transport_loops_back_with_no_socket_and_no_libsrt) {
+  aes67_srt::Config config = in_process_config(19410);
+  Link link;
+  std::string error;
+
+  // Refuses before opening, like every other mode.
+  const std::vector<uint8_t> one_byte{0x00};
+  CHECK(!link.send_message(one_byte.data(), one_byte.size(), &error));
+  CHECK(!error.empty());
+
+  CHECK(link.open(config, &error));
+  CHECK(link.is_open());
+  CHECK(contains(link.peer_description(), "loopback"));
+  CHECK(link.uptime_seconds() >= 0.0);
+
+  // One small frame first — one block fits in a single message — so the
+  // queued-then-delivered property is asserted without a reassembler in the way.
+  const std::vector<uint8_t> small = make_frame_bytes(1, 0x11);
+  CHECK(small.size() < aes67_srt::wire::k_max_message_bytes);
+  CHECK(send_frame_as_messages(&link, small, &error));
+
+  std::vector<uint8_t> message;
+  bool timed_out = false;
+  CHECK(link.receive_message(&message, &timed_out, &error));
+  CHECK(!timed_out);
+  CHECK(message == small);  // queued, not delivered: both ends are here
+
+  // Then one that needs eight messages, reassembled back to the same bytes. This
+  // is the socket test's assertion, with no socket anywhere.
+  const std::vector<uint8_t> large = make_frame_bytes(8, 0x5a);
+  CHECK(large.size() > aes67_srt::wire::k_max_message_bytes * 6);
+  CHECK(send_frame_as_messages(&link, large, &error));
+
+  const std::vector<std::vector<uint8_t>> frames = drain_frames(&link);
+  CHECK_EQ(frames.size(), static_cast<size_t>(1));
+  CHECK(frames[0] == large);
+}
+
+TEST_CASE(transport_a_closed_loopback_hands_back_nothing) {
+  aes67_srt::Config config = in_process_config(19411);
+  Link link;
+  std::string error;
+
+  CHECK(link.open(config, &error));
+
+  const std::vector<uint8_t> frame = make_frame_bytes(1, 0x22);
+  const std::vector<uint8_t> one_byte{0x00};
+  CHECK(send_frame_as_messages(&link, frame, &error));
+  link.close();
+  CHECK(!link.is_open());
+
+  // Sending on a closed link refuses, whatever mode it was last in.
+  CHECK(!link.send_message(one_byte.data(), one_byte.size(), &error));
+  CHECK(!error.empty());
+
+  // And reopening must not hand back the previous session's messages: that would
+  // be a baffling thing to debug from the audio it produced.
+  CHECK(link.open(config, &error));
+  std::vector<uint8_t> message;
+  bool timed_out = false;
+  error.clear();
+  CHECK(!link.receive_message(&message, &timed_out, &error));
+  CHECK(timed_out);
+  CHECK(error.empty());  // a quiet pipe is not a failure
+  CHECK(drain_frames(&link).empty());
+}
+
+TEST_CASE(transport_a_loopback_refuses_rather_than_growing_for_ever) {
+  aes67_srt::Config config = in_process_config(19412);
+  Link link;
+  std::string error;
+  CHECK(link.open(config, &error));
+
+  // Nothing is receiving, so the queue fills. The property that matters is not
+  // the ceiling but the *behaviour*: it refuses, with a reason, rather than
+  // consuming the machine's memory to hide a wiring mistake.
+  const std::vector<uint8_t> message(1000, 0x33);
+  bool refused = false;
+  for (int sent = 0; sent < 100000; ++sent) {
+    if (!link.send_message(message.data(), message.size(), &error)) {
+      refused = true;
+      CHECK(contains(error, "loopback"));
+      CHECK(contains(error, "nothing is receiving"));
+      // A quarter of a second of audio, so a correctly wired loopback never
+      // meets the ceiling and this bound is not the point.
+      CHECK(sent < 8192);
+      break;
+    }
+  }
+  CHECK(refused);
+}
+
+TEST_CASE(transport_a_loopback_has_no_link_statistics) {
+  aes67_srt::Config config = in_process_config(19413);
+  Link link;
+  std::string error;
+  CHECK(link.open(config, &error));
+
+  // Refused rather than answered with zeroes: this class's own rule is that it
+  // fails rather than returning plausible numbers, and a pipe that is not a
+  // network has no RTT, no bandwidth and no loss to report.
+  aes67_srt::transport::LinkStats stats;
+  stats.rtt_ms = -1.0;
+  CHECK(!link.stats(&stats, &error));
+  CHECK(contains(error, "loopback"));
+  CHECK_EQ(stats.rtt_ms, -1.0);  // untouched, not quietly filled with zeroes
+}
+
 TEST_CASE(transport_carries_frames_both_ways_on_one_connection) {
   if (skip_without_srt("the loopback test")) {
     return;
@@ -161,15 +327,15 @@ TEST_CASE(transport_carries_frames_both_ways_on_one_connection) {
   // The listener blocks until a caller arrives, so it gets its own thread.
   std::thread accepting([&] {
     listener.set_receive_timeout_ms(300);
-    listener_up = listener.open(loopback_config("listener", listener_port, ""),
+    listener_up = listener.open(localhost_config("listener", listener_port, ""),
                                 &listener_error);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
   std::string caller_error;
   const bool caller_connected =
-      caller.open(loopback_config("caller", caller_port,
-                                  "127.0.0.1:" + std::to_string(listener_port)),
+      caller.open(localhost_config("caller", caller_port,
+                                   "127.0.0.1:" + std::to_string(listener_port)),
                   &caller_error);
   accepting.join();
 
@@ -242,15 +408,15 @@ TEST_CASE(transport_carries_a_passphrase_link) {
   std::thread accepting([&] {
     listener.set_receive_timeout_ms(300);
     listener_up =
-        listener.open(loopback_config("listener", listener_port, "", passphrase),
+        listener.open(localhost_config("listener", listener_port, "", passphrase),
                       &listener_error);
   });
   std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
   std::string caller_error;
   const bool caller_connected = caller.open(
-      loopback_config("caller", caller_port,
-                      "127.0.0.1:" + std::to_string(listener_port), passphrase),
+      localhost_config("caller", caller_port,
+                       "127.0.0.1:" + std::to_string(listener_port), passphrase),
       &caller_error);
   accepting.join();
 
@@ -296,15 +462,15 @@ TEST_CASE(transport_carries_a_rendezvous_link) {
   std::thread first_thread([&] {
     first.set_receive_timeout_ms(300);
     first_up =
-        first.open(loopback_config("rendezvous", first_port,
-                                   "127.0.0.1:" + std::to_string(second_port)),
+        first.open(localhost_config("rendezvous", first_port,
+                                    "127.0.0.1:" + std::to_string(second_port)),
                    &first_error);
   });
   std::thread second_thread([&] {
     second.set_receive_timeout_ms(300);
     second_up =
-        second.open(loopback_config("rendezvous", second_port,
-                                    "127.0.0.1:" + std::to_string(first_port)),
+        second.open(localhost_config("rendezvous", second_port,
+                                     "127.0.0.1:" + std::to_string(first_port)),
                     &second_error);
   });
   first_thread.join();
@@ -377,11 +543,11 @@ TEST_CASE(transport_takes_strain_as_delay_and_never_drops_audio) {
   // missing and retransmits into the space that frees up — the same recovery path
   // a lossy WAN exercises.
   aes67_srt::Config listener_config =
-      loopback_config("listener", listener_port, "");
+      localhost_config("listener", listener_port, "");
   listener_config.link.receive_buffer_bytes = 262144;
   listener_config.link.flow_control_packets = 256;
 
-  aes67_srt::Config caller_config = loopback_config(
+  aes67_srt::Config caller_config = localhost_config(
       "caller", caller_port, "127.0.0.1:" + std::to_string(listener_port));
   caller_config.link.receive_buffer_bytes = 262144;
   caller_config.link.flow_control_packets = 256;

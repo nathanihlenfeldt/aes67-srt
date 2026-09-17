@@ -35,6 +35,14 @@ struct LinkStats {
  * into messages and reassembling them belongs to `wire`, which keeps this class
  * about the socket and lets both halves be tested separately — the format half
  * without a socket, this half without the format.
+ *
+ * It also has a **loopback mode**, in which there is no socket at all: a message
+ * sent is a message waiting to be received by the same object, in this process.
+ * That is what `-f` means by "loopback transport" — the appliance can run its
+ * whole audio path on a laptop with no network, no second appliance and no
+ * libsrt. It is a development and commissioning facility, not a transport, and
+ * the class says so wherever it can be observed (see `stats` and
+ * `peer_description`).
  */
 class Link {
  public:
@@ -44,15 +52,22 @@ class Link {
   Link(const Link&) = delete;
   Link& operator=(const Link&) = delete;
 
-  /** True when this build contains libsrt at all. */
+  /**
+   * True when this build contains libsrt at all.
+   *
+   * Loopback mode needs no libsrt: it is our own byte pipe, so a build without
+   * the library can still run the whole audio path in fake mode, which is how it
+   * stays honest about having no network.
+   */
   static bool available();
 
   /** Why not, when available() is false. Empty when it is true. */
   static std::string unavailable_reason();
 
   /**
-   * Bring the link up. Blocking: a listener waits for a caller, a caller
-   * connects, rendezvous does both sides.
+   * Bring the link up. Blocking for the three network modes: a listener waits
+   * for a caller, a caller connects, rendezvous does both sides. `loopback`
+   * returns immediately, because there is no peer to wait for.
    */
   bool open(const Config& config, std::string* error);
 
