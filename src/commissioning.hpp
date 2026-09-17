@@ -47,12 +47,13 @@ enum class Subscription {
    * Subscribe every block's sink to this appliance's own source: transmitting to
    * ourselves.
    *
-   * **Measured 2026-09-17: the RAVENNA driver refuses this.**
-   * `HTTP 400: failed to add sink 0 : (driver) command failed` — the source
-   * document is accepted and the sink document parses, and then the kernel module
-   * declines a sink pointed at this box's own multicast group. Kept because it is
-   * the behaviour the spec names, and because a driver update could change it; not
-   * the path to expect to work on a first commissioning.
+   * **Untested since the delay fix, and it failed before it.** A self-subscribed
+   * sink was refused by the RAVENNA driver on 2026-09-17 with `failed to add sink
+   * 0 : (driver) command failed`, and the cause turned out to be the *playout
+   * delay* being zero — the same refusal a sink to a remote sender got (see
+   * `k_sink_playout_delay_samples`). So the self-reference itself was probably
+   * never the problem, and this needs re-testing on the bench rather than being
+   * written off.
    */
   self,
 };
