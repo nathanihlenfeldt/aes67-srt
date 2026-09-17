@@ -14,6 +14,7 @@ using aes67_srt::commission;
 using aes67_srt::CommissioningResult;
 using aes67_srt::Config;
 using aes67_srt::DaemonConfig;
+using aes67_srt::Subscription;
 using aes67_srt::daemon::DaemonClient;
 using aes67_srt::daemon::json;
 
@@ -42,7 +43,8 @@ TEST_CASE(commissioning_publishes_one_source_per_block_with_its_own_channels) {
   CommissioningResult result;
   std::string error;
 
-  CHECK(commission(daemon.get(), config, false, &result, &error));
+  CHECK(commission(daemon.get(), config, Subscription::none, std::string(), &result,
+                   &error));
   CHECK_EQ(result.sources_published, static_cast<size_t>(8));
   // Nothing was asked for the other direction, so nothing was subscribed.
   CHECK_EQ(result.sinks_subscribed, static_cast<size_t>(0));
@@ -70,7 +72,8 @@ TEST_CASE(commissioning_the_loopback_subscribes_each_sink_to_our_own_source) {
   CommissioningResult result;
   std::string error;
 
-  CHECK(commission(daemon.get(), config, true, &result, &error));
+  CHECK(commission(daemon.get(), config, Subscription::self, std::string(), &result,
+                   &error));
   CHECK_EQ(result.sources_published, static_cast<size_t>(8));
   CHECK_EQ(result.sinks_subscribed, static_cast<size_t>(8));
   // The daemon's own answer is the outcome that matters: a sink reporting
@@ -109,9 +112,63 @@ TEST_CASE(commissioning_reports_an_unlocked_slave_without_refusing_to_wire) {
   // looking healthy, so it must be *reported* — but the streams are still
   // published, because the lock often arrives a few seconds later and refusing
   // to wire up would then need a restart to fix.
-  CHECK(commission(daemon.get(), config, false, &result, &error));
+  CHECK(commission(daemon.get(), config, Subscription::none, std::string(), &result,
+                   &error));
   CHECK_EQ(result.ptp_status, std::string("unlocked"));
   CHECK_EQ(result.sources_published, static_cast<size_t>(2));
+}
+
+TEST_CASE(commissioning_subscribes_block_zero_to_a_named_announcement) {
+  // The path that matters on a real bench: there is a genuine eight-channel AES67
+  // sender on the network, and the appliance's job on the receive side is to
+  // subscribe to it. The SDP has to come from the daemon's *discovery* rather
+  // than from anything we invent, so what this asserts is the round trip:
+  // browse, pick by name, and put the daemon's own SDP into the sink.
+  const Config config = commissioning_config(8);
+  std::unique_ptr<DaemonClient> daemon = DaemonClient::create(config.daemon);
+  CommissioningResult result;
+  std::string error;
+
+  CHECK(commission(daemon.get(), config, Subscription::discovered, "AES67-TX-1",
+                   &result, &error));
+  CHECK_EQ(result.sources_published, static_cast<size_t>(8));
+  // One sink, not eight: the sender has eight channels, and eight sinks on one
+  // eight-channel stream would be the same audio eight times over.
+  CHECK_EQ(result.sinks_subscribed, static_cast<size_t>(1));
+  CHECK_EQ(result.sinks_receiving, static_cast<size_t>(1));
+
+  json sinks;
+  CHECK(daemon->get_sinks(&sinks, &error));
+  CHECK_EQ(sinks.at("sinks").size(), static_cast<size_t>(1));
+  const json& sink = sinks.at("sinks").at(0);
+  CHECK_EQ(sink.at("id").get<int>(), 0);
+  CHECK(contains(sink.at("sdp").get<std::string>(), "AES67-TX-1"));
+  CHECK(contains(sink.at("sdp").get<std::string>(), "L24/48000/8"));
+  // Block 0's channels, so the eight channels of the announcement land there.
+  CHECK_EQ(sink.at("map"), json(config.blocks[0].channels));
+}
+
+TEST_CASE(commissioning_refuses_a_name_that_was_not_discovered) {
+  // A typo has to be answerable from the log. "No such source" without saying
+  // what *was* found sends whoever typed it to a shell to curl the daemon.
+  const Config config = commissioning_config(1);
+  std::unique_ptr<DaemonClient> daemon = DaemonClient::create(config.daemon);
+  CommissioningResult result;
+  std::string error;
+
+  CHECK(!commission(daemon.get(), config, Subscription::discovered, "AES67-TX-7",
+                    &result, &error));
+  CHECK(contains(error, "AES67-TX-7"));
+  CHECK(contains(error, "AES67-TX-1"));
+  CHECK(contains(error, "AES67-TX-2-qsys"));
+
+  // And the sources were still published, because publishing comes first and is
+  // not something a failed subscription should undo.
+  CHECK_EQ(result.sources_published,
+           static_cast<size_t>(0));  // result is written only at the end
+  json sources;
+  CHECK(daemon->get_sources(&sources, &error));
+  CHECK_EQ(sources.at("sources").size(), static_cast<size_t>(1));
 }
 
 TEST_CASE(commissioning_refuses_when_there_is_no_daemon_to_talk_to) {
@@ -125,7 +182,8 @@ TEST_CASE(commissioning_refuses_when_there_is_no_daemon_to_talk_to) {
 
   CommissioningResult result;
   std::string error;
-  CHECK(!commission(daemon.get(), config, false, &result, &error));
+  CHECK(!commission(daemon.get(), config, Subscription::none, std::string(),
+                    &result, &error));
   CHECK(contains(error, "127.0.0.1:1"));
   CHECK_EQ(result.sources_published, static_cast<size_t>(0));
 }

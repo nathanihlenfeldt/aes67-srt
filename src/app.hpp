@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "commissioning.hpp"
 #include "config.hpp"
 
 namespace aes67_srt {
@@ -44,13 +45,14 @@ class App {
   void set_fake(bool fake);
 
   /**
-   * Ask the daemon to subscribe each block's sink to this appliance's own
-   * source: the commissioning loopback, transmitting to ourselves.
+   * Subscribe the appliance's sinks, and to what.
    *
-   * Off by default, because it is a *test* rather than an operating mode — a
-   * site wires its sinks to the far end, not to the box in front of it.
+   * `none` is the operating default: an appliance publishes its sources and the
+   * site wires the receive side. The other two are commissioning choices — the
+   * first block subscribed to a discovered announcement by name, or every block
+   * subscribed to this appliance's own source.
    */
-  void set_commissioning_loopback(bool enabled);
+  void set_subscription(Subscription subscription, const std::string& subscribe_to);
 
   /**
    * Log what this build is and what it is not.
@@ -81,7 +83,8 @@ class App {
 
   Config config_;
   bool fake_ = false;
-  bool commissioning_loopback_ = false;
+  Subscription subscription_ = Subscription::none;
+  std::string subscribe_to_;
 };
 
 }  // namespace aes67_srt

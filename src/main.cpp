@@ -17,10 +17,13 @@ void print_usage(const char* program) {
       << "\n"
       << "  -c <config>   configuration file (default /etc/aes67-srt.conf)\n"
       << "  -f            fake mode: null audio, fake daemon, loopback transport\n"
-      << "  --commission-loopback\n"
-      << "                subscribe each block's sink to this appliance's own\n"
-      << "                source through the daemon: a one-box test of the whole\n"
-      << "                AES67 path, which fails the run if it cannot be wired\n"
+      << "  --commission  publish this appliance's sources on the daemon; asks\n"
+      << "                for nothing back, and is what a site runs\n"
+      << "  --subscribe <name|self>\n"
+      << "                publish the sources and subscribe block 0 to the\n"
+      << "                discovery announcement <name>, or to \"self\" for this\n"
+      << "                appliance's own source (every block). A commissioning\n"
+      << "                run, so it fails the process if the daemon refuses\n"
       << "  --validate    check the configuration and exit; nothing runs\n"
       << "  -a <addr>     override http_addr\n"
       << "  -p <port>     override http_port\n"
@@ -36,7 +39,7 @@ int main(int argc, char** argv) {
   std::string http_port_override;
   bool validate_only = false;
   bool fake = false;
-  bool commission_loopback = false;
+  std::string subscribe_to;
 
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -44,8 +47,11 @@ int main(int argc, char** argv) {
       config_path = argv[++index];
     } else if (argument == "-f") {
       fake = true;
-    } else if (argument == "--commission-loopback") {
-      commission_loopback = true;
+    } else if (argument == "--subscribe" && index + 1 < argc) {
+      subscribe_to = argv[++index];
+    } else if (argument == "--commission") {
+      // Publishing is what the appliance does anyway; the flag exists so a script
+      // can say "this will write to the daemon" out loud.
     } else if (argument == "--validate") {
       validate_only = true;
     } else if (argument == "-a" && index + 1 < argc) {
@@ -97,6 +103,12 @@ int main(int argc, char** argv) {
   aes67_srt::App app;
   app.configure(config);
   app.set_fake(fake);
-  app.set_commissioning_loopback(commission_loopback);
+  // "self" is the one name that is not an announcement: it means this appliance's
+  // own source, i.e. the commissioning loopback the spec asks for.
+  if (subscribe_to == "self") {
+    app.set_subscription(aes67_srt::Subscription::self, std::string());
+  } else if (!subscribe_to.empty()) {
+    app.set_subscription(aes67_srt::Subscription::discovered, subscribe_to);
+  }
   return app.run();
 }

@@ -55,8 +55,10 @@ void App::set_fake(bool fake) {
   }
 }
 
-void App::set_commissioning_loopback(bool enabled) {
-  commissioning_loopback_ = enabled;
+void App::set_subscription(Subscription subscription,
+                           const std::string& subscribe_to) {
+  subscription_ = subscription;
+  subscribe_to_ = subscribe_to;
 }
 
 void App::describe() const {
@@ -130,10 +132,10 @@ int App::run() {
   std::unique_ptr<daemon::DaemonClient> daemon =
       daemon::DaemonClient::create(config_.daemon);
   CommissioningResult commissioning;
-  if (!commission(daemon.get(), config_, commissioning_loopback_, &commissioning,
-                  &error)) {
+  if (!commission(daemon.get(), config_, subscription_, subscribe_to_,
+                  &commissioning, &error)) {
     log().write(LogLevel::error, error);
-    if (commissioning_loopback_) {
+    if (subscription_ != Subscription::none) {
       return static_cast<int>(ExitCode::runtime_error);
     }
   }

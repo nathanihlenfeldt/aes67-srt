@@ -5,7 +5,7 @@
 #
 #   bash measure-hardware.sh            # writes hardware-report-<host>-<date>.txt
 #   curl -fsSL <url> -o /tmp/measure.sh && bash /tmp/measure.sh
-#   bash measure-hardware.sh --commission-loopback
+#   bash measure-hardware.sh --commission [--subscribe <name|self|auto>]
 #                                       # also wires the daemon and proves the whole
 #                                       # path on one box (see the promise below)
 #
@@ -16,11 +16,10 @@
 #   * writes exactly one file, the report, in the directory you run it from
 #   * compiles two small probes in a temporary directory and deletes it
 #   * reads the daemon's REST API on localhost. The default run does not write to
-#     it. **--commission-loopback is the one exception, and it says so**: it asks
-#     our own binary to publish one AES67 source per block and subscribe a sink to
-#     each — two documents per block — because that is how the never-before-proved
-#     half gets proved. It is off unless you ask for it, and it is the only writing
-#     this script does.
+#     it. **--commission is the one exception, and it says so**: it asks our own
+#     binary to publish one AES67 source per block and to subscribe at most one
+#     sink — two documents per block for the sources, one for the sink. It is off
+#     unless you ask for it, and it is the only writing this script does.
 #
 # Source of truth: scripts/measure-hardware.sh in the aes67-srt repository, which
 # is private. This file is a mirror for running on an appliance that cannot clone
@@ -34,14 +33,28 @@
 # Deliberately NOT `set -e`: a missing tool should be reported, not abort the run.
 set -uo pipefail
 
-COMMISSION_LOOPBACK=false
+COMMISSION=false
+SUBSCRIBE_TO=auto
+SEEN_SUBSCRIBE=false
 for argument in "$@"; do
+  if [ "${SEEN_SUBSCRIBE}" = "true" ]; then
+    SUBSCRIBE_TO="${argument}"
+    SEEN_SUBSCRIBE=false
+    continue
+  fi
   case "${argument}" in
-    --commission-loopback) COMMISSION_LOOPBACK=true ;;
-    *) printf 'unknown argument: %s (only --commission-loopback is accepted)\n' "${argument}"
-       exit 2 ;;
+    --commission) COMMISSION=true ;;
+    --subscribe) SEEN_SUBSCRIBE=true ;;
+    *)
+      echo "unknown argument: ${argument} (only --commission and --subscribe <name> are accepted)"
+      exit 2
+      ;;
   esac
 done
+if [ "${SEEN_SUBSCRIBE}" = "true" ]; then
+  echo '--subscribe needs a value: an announcement name, or "self", or "auto"'
+  exit 2
+fi
 
 REPORT="hardware-report-$(hostname -s 2>/dev/null || echo host)-$(date +%Y%m%d-%H%M).txt"
 exec > >(tee "${REPORT}") 2>&1
@@ -546,10 +559,13 @@ if [ ! -x build/aes67-srt ]; then
   note "is why it says so rather than measuring something else instead."
 elif ! curl -fsS --max-time 3 http://127.0.0.1:8080/api/config >/dev/null 2>&1; then
   note "the daemon is not answering on 127.0.0.1:8080, so there is nothing to wire up"
-elif [ "${COMMISSION_LOOPBACK}" != "true" ]; then
+elif [ "${COMMISSION}" != "true" ]; then
   note "not run. This section writes to the daemon, so it is off unless you ask:"
-  note "  bash $0 --commission-loopback"
-  note "It will publish one source per block and subscribe one sink per block."
+  note "  bash $0 --commission                    # publish, and subscribe to an"
+  note "                                          # eight-channel sender it finds"
+  note "  bash $0 --commission --subscribe NAME   # a specific announcement"
+  note "  bash $0 --commission --subscribe self   # transmit to ourselves"
+  note "It publishes one source per block and subscribes at most one sink."
 else
   printf '\n--- the configuration, before anything is wired\n'
   # A commissioning configuration rather than the production one: the daemon and the
@@ -576,9 +592,11 @@ else
   fi
 
   printf '\n--- our binary, commissioning for 15 seconds\n'
+  note "subscribe target: ${SUBSCRIBE_TO} (\"self\" means our own source, \"auto\" means"
+  note "the first eight-channel L24 sender discovered - the binary names its choice)"
   appliance_log="$(mktemp)"
-  ./build/aes67-srt -c config/aes67-srt.commissioning.conf --commission-loopback \
-    >"${appliance_log}" 2>&1 &
+  ./build/aes67-srt -c config/aes67-srt.commissioning.conf \
+    --subscribe "${SUBSCRIBE_TO}" >"${appliance_log}" 2>&1 &
   appliance=$!
   sleep 15
   # SIGTERM, because that is what systemd sends and the appliance is built to stop

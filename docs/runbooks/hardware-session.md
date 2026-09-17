@@ -19,7 +19,7 @@ cmake -S . -B build && cmake --build build --parallel
 bash scripts/measure-hardware.sh
 
 # and then the one section that writes to the daemon, which is off by default
-bash scripts/measure-hardware.sh --commission-loopback
+bash scripts/measure-hardware.sh --commission
 ```
 
 **If the appliance cannot clone this repository** (it is private), the same script is published as a
@@ -32,23 +32,34 @@ bash /tmp/measure.sh
 
 It needs **no root**, installs nothing, and writes one report file in the directory you run it from.
 The only sections it cannot cover without a clone are §3 and §9, and it says so — those two need our
-own binary. **`--commission-loopback` is the only thing the script does that writes anywhere**: it
-asks our binary to publish one AES67 source per block on the daemon and subscribe a sink to each,
-which is two REST documents per block. Everything else is read-only.
+own binary. **`--commission` is the only thing the script does that writes anywhere**: it asks our
+binary to publish one AES67 source per block and to subscribe at most one sink, which is two REST
+documents per block for the sources and one for the sink. Everything else is read-only.
+`--subscribe <name|self|auto>` chooses what that sink takes; `auto` means the first
+eight-channel L24 sender it finds, and the binary says which one it picked.
 
 ### The three things that matter most, in this order
 
 1. **§4's ten-second capture.** The earlier session proved the device *opens* at 64 channels; it did
    not prove it streams. Watch for overruns and for the wall clock against the audio duration.
-2. **§9, the commissioning loopback.** This is issue #9's hardware criterion and it has never run
-   against the real daemon. It runs the appliance with `config/aes67-srt.commissioning.conf` — the
-   production daemon and device, but a **loopback link**, because the AES67 wiring does not involve the
-   link and a config pointing at a WAN peer would fail to open seconds after commissioning succeeded.
-   What answers the criterion is the counting line — *"N sources published, N sinks subscribed,
-   **N receiving**"* — and the per-sink flags after it, because which block is silent is the whole
-   question. **If everything is green except "receiving", check `streamer_enabled` in §9's settings
-   list**: provisioning sets it false, and whether a source handed over REST needs it true is the open
-   question this run answers.
+2. **§9, the commissioning.** This is issue #9's hardware criterion. It runs the appliance with
+   `config/aes67-srt.commissioning.conf` — the production daemon and device, but a **loopback link**,
+   because the AES67 wiring does not involve the link and a config pointing at a WAN peer would fail to
+   open seconds after commissioning succeeded. What answers the criterion is the counting line —
+   *"N sources published, N sinks subscribed, **N receiving**"*.
+
+   **A sink pointed at this box's own source is refused by the RAVENNA driver** (`failed to add sink 0 :
+   (driver) command failed`), which is why the default is a *discovered* sender instead: the network
+   already carries an eight-channel L24 source, and subscribing to it is both the real product
+   behaviour and the thing that proves the receive side. **If everything is green except "receiving",
+   check `streamer_enabled` in §9's settings list**: provisioning sets it false, and whether a source
+   handed over REST needs it true is the open question this run answers.
+
+   **`--commission --subscribe <name|self|auto>` is what to run**, and `auto` is the useful default: it
+   subscribes block 0 to the first discovered announcement carrying eight channels of L24 — on this
+   bench, `AES67-TX-1`. `self` is the spec's commissioning loopback, and **the RAVENNA driver refuses
+   it** (`failed to add sink 0 : (driver) command failed`), so it is not the first thing to try.
+   Measured 2026-09-17: our sources *are* accepted by the daemon; the sink is the open half.
 3. **§5's PTP state.** Locked or not is the difference between audio and no audio, and it is the
    commonest reason a healthy-looking appliance is silent.
 

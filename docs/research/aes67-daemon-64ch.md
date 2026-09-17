@@ -123,9 +123,30 @@ in CI rather than on hardware. It was checked against a deliberate mutant: dropp
 multicast scope and QoS marking — and making them configurable is an open item, since the spec's
 configuration schema has no such fields.
 
-**`streamer_enabled: false` did not block the PUT.** The daemon parsed far enough to complain about the
-document, so that setting is not what refused us. Whether it blocks *streaming* from a source we hand
-it is still open.
+**Third run, with the corrected document: the source is accepted and the sink is not.**
+`GET /api/sources` afterwards holds our stream, echoed back by the daemon:
+
+```json
+{ "id": 0, "enabled": true, "name": "aes67-srt block 0", "codec": "L24",
+  "address": "239.1.0.1", "ttl": 15, "payload_type": 98, "dscp": 34,
+  "refclk_ptp_traceable": false, "map": [ 0, 1, 2, 3, 4, 5, 6, 7 ] }
+```
+
+**That is the first thing of ours the real daemon has accepted**, and `address` is the tell: we send
+`""` and it chose `239.1.0.1` from its own multicast base, which is what the empty string asks for.
+
+The self-subscription failed one layer deeper than the document:
+
+```
+HTTP 400: failed to add sink 0 : (driver) command failed
+```
+
+Not a JSON error — `session_manager::add_sink` parses the SDP and then asks the kernel module to add
+the stream, and the driver declined. So **the RAVENNA driver will not put a sink on this box's own
+source's multicast group.** The mechanism that the spec calls the "commissioning loopback" does not
+work as described on this driver. It is kept as a code path and asserted in CI against the fake, with
+the refusal recorded where it is implemented; the way to prove the receive half is to subscribe to a
+real announcement, which is also what a site does — and there is one on this network.
 
 **The device streams, and our backend drives it.** Ten seconds of
 `arecord -f S24_3LE -r 48000 -c 64 -d 10` completed in ten seconds of wall clock with no overruns —
