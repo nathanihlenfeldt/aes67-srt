@@ -326,9 +326,9 @@ TEST_CASE(daemon_a_sink_document_carries_every_field_the_daemon_reads) {
                           "ignore_refclk_gmid", "map"}) {
     CHECK(sink.contains(key));
   }
-  // Non-zero: the driver refuses a sink whose receive buffer is zero. Measured on
-  // the Pi on 2026-09-17 — 384 and 576 accepted, 0 refused with
-  // "(driver) command failed", which names nothing.
+  // Non-zero, because it is the sink's receive buffer and not a delay line: zero
+  // means no buffer at all, which is unusable even where a driver accepts it. The
+  // value is the daemon's own template's.
   CHECK_EQ(sink.at("delay").get<int>(), 384);
 }
 

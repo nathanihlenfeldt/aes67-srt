@@ -361,24 +361,22 @@ json make_block_source(const Config& config, const BlockConfig& block) {
 /**
  * The sink's playout delay, in samples.
  *
- * **The RAVENNA driver refuses a sink with this set to zero**, and it does so with
- * a generic refusal that names nothing:
+ * 384 is the value in the daemon's own sink template (`daemon/json.cpp` at
+ * `json_to_sink`), so this is what the daemon gives a sink created in its own web
+ * UI — 8 ms at 48 kHz, which is also eight of our 1 ms periods.
  *
- *   delay 384 -> HTTP 200      delay 576 -> HTTP 200
- *   delay   0 -> HTTP 400 "failed to add sink 0 : (driver) command failed"
+ * **Why it is not zero, which is what we sent first.** The reasoning was that the
+ * daemon should add no delay because the A/V delay line is ours
+ * (`egress.delay_ms`), and that mistook the mechanism: this is not a competing
+ * delay line, it is the sink's *receive buffer* — the thing that absorbs network
+ * jitter and aligns the RTP timeline with the ALSA one. Zero means no buffer at
+ * all, which is unusable even where a driver accepts it.
  *
- * Measured on the Pi, 2026-09-17, against a real `AES67-TX-1` announcement. The
- * first version of this document sent 0, reasoning that the daemon should not add
- * a delay line because the A/V delay is ours — which mistook the mechanism. This
- * is not a competing delay line: it is the sink's *receive buffer*, the thing that
- * absorbs network jitter and aligns the RTP timeline with the ALSA one. Zero means
- * no buffer at all, which is unusable even where it is accepted.
- *
- * 384 samples is the value in the daemon's own sink template (`daemon/json.cpp` at
- * `json_to_sink`), so it is the delay the daemon gives a sink created in its own
- * web UI — 8 ms at 48 kHz, which is also eight of our 1 ms periods. A site with a
- * jitterier network may want more, and that is a configuration question like TTL
- * and DSCP rather than something decided here.
+ * The 2026-09-17 session saw the driver refuse our sink with
+ * `failed to add sink 0 : (driver) command failed`, and the working theory is that
+ * this zero is what it objected to. **That is a hypothesis, not a measurement**:
+ * the next commissioning run is what tests it, and what it will show is either a
+ * sink that subscribes or a refusal that names something else.
  */
 constexpr int k_sink_playout_delay_samples = 384;
 
