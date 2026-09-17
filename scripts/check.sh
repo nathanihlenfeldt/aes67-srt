@@ -14,11 +14,12 @@ cd "${REPO_ROOT}"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 # .clang-format targets clang-format 18, which is what ubuntu-24.04 ships and
-# what CI enforces.  A newer clang-format can break lines differently, so prefer
-# the pinned version when it is present and fall back to whatever is installed
-# rather than skipping the gate.  On macOS:
+# what CI enforces.  The *patch* version matters: ubuntu-24.04 has 18.1.3 and
+# 18.1.8 is what pip installs, and the two disagree on how to break a long `<<`
+# chain — that cost a CI run on 2026-09-17.  Install the version CI uses, and a
+# newer major version is still worse than either.  On macOS:
 #
-#   python3 -m pip install --user 'clang-format==18.1.8'
+#   python3 -m pip install --user 'clang-format==18.1.3'
 #
 if [ -z "${CLANG_FORMAT:-}" ]; then
   if command -v clang-format-18 >/dev/null 2>&1; then

@@ -334,25 +334,30 @@ TEST_CASE(clock_the_ratio_consumes_the_input_at_the_rate_the_loop_asked_for) {
   CHECK(long_run.opened);
   CHECK_EQ(long_run.output_frames, long_pulls * 48u);
   const uint64_t held = long_run.held_frames;
-  const double steady = static_cast<double>(long_run.input_frames - held) /
-                        static_cast<double>(long_run.output_frames);
-  const double steady_ppm = (steady - 1.0) * 1e6;
-  // The raw rate reads high by exactly the audio the library is holding — one
-  // period over 9.6 million frames is 5 ppm — which is why the steady figure takes
-  // the hold out first. What is being verified is the *rate*, and the hold is a
-  // constant the run carries.
-  CHECK_NEAR(static_cast<double>(long_run.input_frames) /
-                     static_cast<double>(long_run.output_frames) * 1e6 -
-                 1e6,
-             steady_ppm + 1e6 * static_cast<double>(held) /
-                              static_cast<double>(long_run.output_frames),
-             1e-6);
-  CHECK_NEAR(steady_ppm, 10.0, 2.0);
+  const double raw_ppm = (static_cast<double>(long_run.input_frames) /
+                              static_cast<double>(long_run.output_frames) -
+                          1.0) *
+                         1e6;
+  // What the library consumes is the ratio's worth of input **plus the working room
+  // it has not produced from yet**, bounded here at two periods: over 9.6 million
+  // frames that is 10 ppm, and it is the whole margin — what the library consumes
+  // is quantised to whole periods, which is exactly why this cannot be a tighter
+  // test. Measured, it read 15 ppm for a request of 10, one period of room being
+  // the 5.
+  //
+  // The claim is not circular: it is measured from the counters, not from the
+  // ledger, which is *defined* in terms of the ratio and would have said "ten ppm"
+  // whatever the library did. A reciprocal taken the wrong way — the bug this
+  // module cannot afford — reads -5 here.
+  const double room_ppm = 1e6 * 96.0 / static_cast<double>(long_run.output_frames);
+  CHECK(raw_ppm > 10.0 - 1.0);
+  CHECK(raw_ppm < 10.0 + room_ppm);
 
   std::cout << "    resampler: ratio 1.1/0.9 consumed " << wider.input_frames << "/"
             << narrower.input_frames << " frames for " << pulls * 48
-            << " out; over " << long_pulls << " periods the steady "
-            << "ratio was " << steady_ppm << " ppm (asked for 10)" << std::endl;
+            << " out; over " << long_pulls
+            << " periods at 1.00001 the rate measured " << raw_ppm
+            << " ppm (asked for 10)" << std::endl;
 
   // What the library holds, which is the number the A/V figure needs: it takes more
   // input than it produces and keeps the difference. Measured as one to two periods
