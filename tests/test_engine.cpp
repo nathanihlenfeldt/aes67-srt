@@ -496,7 +496,15 @@ TEST_CASE(engine_delivers_the_full_rate_over_a_real_srt_link) {
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   std::thread remote_thread(
       [&remote, &remote_result] { remote_result = remote.run(); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  // Wait for the sender to have run long enough that the ratio means something,
+  // rather than for a fixed wall-clock window: a loaded runner can spend most of a
+  // fixed sleep on link start-up, and a test that fails for being scheduled late
+  // teaches nothing. The clock's own slow loop does not matter here -- this is
+  // throughput, not the crystal.
+  for (int attempt = 0; attempt < 500 && site.status().frames_sent < 1000;
+       ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
   site.stop();
   remote.stop();
   site_thread.join();
