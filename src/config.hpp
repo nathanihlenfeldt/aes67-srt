@@ -21,7 +21,9 @@ struct BlockConfig {
 };
 
 struct AudioConfig {
-  std::string backend = "ravenna";  // ravenna | null
+  std::string backend = "ravenna";  // ravenna | coreaudio | null
+  /** The device name for the chosen backend: `plughw:RAVENNA` on the appliance,
+   *  a CoreAudio device name such as `BlackHole 64ch` on the macOS endpoint. */
   std::string device = "plughw:RAVENNA";
   int channels = 64;
   int sample_rate = 48000;

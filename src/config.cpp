@@ -341,9 +341,16 @@ bool Config::validate(std::string* reason) const {
   }
 
   // --- audio ---------------------------------------------------------------
-  if (audio.backend != "ravenna" && audio.backend != "null") {
-    return fail(reason, "audio.backend: expected \"ravenna\" or \"null\", got \"" +
-                            audio.backend + "\"");
+  // "coreaudio" is the macOS endpoint's device (ADR 0005): the same engine, a
+  // different seam. It is accepted here on every platform -- the build that lacks
+  // it refuses at open() with a reason, which is the pattern the other backends
+  // already follow -- so one configuration document works on both products.
+  if (audio.backend != "ravenna" && audio.backend != "null" &&
+      audio.backend != "coreaudio") {
+    return fail(reason,
+                "audio.backend: expected \"ravenna\", \"coreaudio\" or \"null\", "
+                "got \"" +
+                    audio.backend + "\"");
   }
   if (audio.device.empty()) {
     return fail(reason, "audio.device: required (e.g. plughw:RAVENNA)");

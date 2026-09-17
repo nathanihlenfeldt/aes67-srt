@@ -184,15 +184,17 @@ TEST_CASE(audio_the_null_backend_ticks_at_its_nominal_rate) {
 
 TEST_CASE(audio_the_factory_refuses_a_backend_this_build_does_not_have) {
   // A typo in the configuration, and the reason names the string that was typed
-  // rather than reporting a null pointer somewhere further along.
+  // rather than reporting a null pointer somewhere further along. (This used
+  // "coreaudio" until the macOS endpoint made that a real backend -- which is the
+  // point of the test: a name this build does not have is refused by name.)
   aes67_srt::AudioConfig config;
-  config.backend = "coreaudio";
+  config.backend = "pulseaudio";
   std::unique_ptr<aes67_srt::audio::AudioBackend> backend =
       create_audio_backend(config);
   CHECK_EQ(backend->kind(), std::string("unavailable"));
   std::string error;
   CHECK(!backend->open(AudioFormat{}, &error));
-  CHECK(contains(error, "coreaudio"));
+  CHECK(contains(error, "pulseaudio"));
   CHECK(contains(error, "audio.backend"));
 
   // And the one backend every build has, so the fake mode always has somewhere
@@ -454,4 +456,26 @@ TEST_CASE(audio_the_levels_work_for_sixteen_bit_samples_too) {
     CHECK_EQ(period[sample * 2], 0);
     CHECK_EQ(period[sample * 2 + 1], 0);
   }
+}
+
+TEST_CASE(audio_the_coreaudio_backend_refuses_a_device_that_is_not_there) {
+  // The macOS endpoint's device (ADR 0005). A device that is missing is refused by
+  // name at open(), which is the same contract the RAVENNA backend has -- and it is
+  // testable without the device being present, which is how it is written before
+  // BlackHole is installed.
+  if (!aes67_srt::audio::coreaudio_backend_available()) {
+    std::cout << "  this build has no CoreAudio backend: skipping" << std::endl;
+    return;
+  }
+  aes67_srt::AudioConfig config;
+  config.backend = "coreaudio";
+  config.device = "No Such CoreAudio Device";
+  config.channels = 8;
+  config.sample_rate = 48000;
+  config.period_frames = 48;
+  std::unique_ptr<aes67_srt::audio::AudioBackend> backend =
+      create_audio_backend(config);
+  std::string error;
+  CHECK(!backend->open(aes67_srt::audio::audio_format_from(config), &error));
+  CHECK(error.find("No Such CoreAudio Device") != std::string::npos);
 }

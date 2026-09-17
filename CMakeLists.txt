@@ -33,9 +33,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(WITH_SRT "AUTO" CACHE STRING "Build the SRT transport: ON, OFF or AUTO")
 set(WITH_ALSA "AUTO" CACHE STRING "Build the RAVENNA/ALSA backend: ON, OFF or AUTO")
 set(WITH_SAMPLERATE "AUTO" CACHE STRING "Build the clock's resampler: ON, OFF or AUTO")
+set(WITH_COREAUDIO "AUTO" CACHE STRING "Build the macOS CoreAudio backend: ON, OFF or AUTO")
 set_property(CACHE WITH_SRT PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_ALSA PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_SAMPLERATE PROPERTY STRINGS ON OFF AUTO)
+set_property(CACHE WITH_COREAUDIO PROPERTY STRINGS ON OFF AUTO)
 
 option(WITH_TESTS "Build unit tests" ON)
 option(WITH_WEBUI "Build the web UI (requires npm)" OFF)
@@ -163,6 +165,17 @@ if(NOT WITH_SAMPLERATE STREQUAL "OFF")
   endif()
 endif()
 
+# CoreAudio is the macOS endpoint's device (ADR 0005). It is not a dependency of
+# the appliance: on Linux it is simply absent, and on macOS it is what lets the
+# same engine run against a real CoreAudio device instead of the null backend.
+set(COREAUDIO_AVAILABLE FALSE)
+if(APPLE AND NOT WITH_COREAUDIO STREQUAL "OFF")
+  set(COREAUDIO_AVAILABLE TRUE)
+  message(STATUS "CoreAudio found: the macOS endpoint's device backend")
+elseif(WITH_COREAUDIO STREQUAL "ON" AND NOT APPLE)
+  message(FATAL_ERROR "WITH_COREAUDIO=ON but this is not an Apple platform")
+endif()
+
 # ---------------------------------------------------------------------------
 # Core library
 #
@@ -202,6 +215,12 @@ if(ALSA_AVAILABLE)
   list(APPEND AES67_SRT_SOURCES src/audio/ravenna_backend.cpp)
 endif()
 
+# The CoreAudio backend is the same shape for the same reason: it is macOS API
+# code, and it joins the library only where it can compile.
+if(COREAUDIO_AVAILABLE)
+  list(APPEND AES67_SRT_SOURCES src/audio/coreaudio_backend.cpp)
+endif()
+
 add_library(aes67-srt-core STATIC ${AES67_SRT_SOURCES})
 target_include_directories(aes67-srt-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if(ALSA_AVAILABLE)
@@ -212,6 +231,7 @@ target_compile_definitions(aes67-srt-core PUBLIC
   AES67_SRT_VERSION="${PROJECT_VERSION}"
   AES67_SRT_WITH_SRT=$<BOOL:${SRT_AVAILABLE}>
   AES67_SRT_WITH_ALSA=$<BOOL:${ALSA_AVAILABLE}>
+  AES67_SRT_WITH_COREAUDIO=$<BOOL:${COREAUDIO_AVAILABLE}>
   AES67_SRT_WITH_SAMPLERATE=$<BOOL:${SAMPLERATE_AVAILABLE}>)
 target_link_libraries(aes67-srt-core
   PUBLIC nlohmann_json::nlohmann_json httplib::httplib Threads::Threads)
@@ -248,6 +268,17 @@ if(SAMPLERATE_AVAILABLE)
   message(STATUS "clock: libsamplerate linked from ${SAMPLERATE_LIBRARY}")
 else()
   message(STATUS "clock: built without libsamplerate - the resampler will refuse")
+endif()
+
+# CoreAudio is frameworks, not a library to find, and it is linked only on the
+# platform that has it.
+if(COREAUDIO_AVAILABLE)
+  target_link_libraries(aes67-srt-core PRIVATE
+    "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit"
+    "-framework CoreFoundation")
+  message(STATUS "audio: CoreAudio backend linked (the macOS endpoint, ADR 0005)")
+else()
+  message(STATUS "audio: built without CoreAudio - the coreaudio backend will refuse")
 endif()
 
 add_executable(aes67-srt src/main.cpp)

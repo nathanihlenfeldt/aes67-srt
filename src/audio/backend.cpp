@@ -6,6 +6,10 @@
 #include "audio/ravenna_backend.hpp"
 #endif
 
+#if AES67_SRT_WITH_COREAUDIO
+#include "audio/coreaudio_backend.hpp"
+#endif
+
 namespace aes67_srt::audio {
 namespace {
 
@@ -84,6 +88,14 @@ bool null_backend_available() {
   return true;
 }
 
+bool coreaudio_backend_available() {
+#if AES67_SRT_WITH_COREAUDIO
+  return true;
+#else
+  return false;
+#endif
+}
+
 std::unique_ptr<AudioBackend> create_audio_backend(const AudioConfig& config) {
   if (config.backend == "null") {
     return std::unique_ptr<AudioBackend>(new NullBackend());
@@ -98,6 +110,15 @@ std::unique_ptr<AudioBackend> create_audio_backend(const AudioConfig& config) {
     return std::unique_ptr<AudioBackend>(new UnavailableBackend(
         "audio.backend: this build has no ALSA support; configure with ALSA "
         "present, or use \"null\""));
+#endif
+  }
+  if (config.backend == "coreaudio") {
+#if AES67_SRT_WITH_COREAUDIO
+    return std::unique_ptr<AudioBackend>(new CoreAudioBackend(config));
+#else
+    return std::unique_ptr<AudioBackend>(new UnavailableBackend(
+        "audio.backend: this build has no CoreAudio support; it is the macOS "
+        "endpoint's device and exists on Apple platforms only"));
 #endif
   }
   return std::unique_ptr<AudioBackend>(new UnavailableBackend(

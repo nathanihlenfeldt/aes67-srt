@@ -120,6 +120,9 @@ AudioFormat audio_format_from(const AudioConfig& config);
 /** True when this build contains the ALSA/RAVENNA backend. */
 bool ravenna_backend_available();
 
+/** True when this build contains the CoreAudio backend (Apple platforms). */
+bool coreaudio_backend_available();
+
 /** True when this build contains the null backend. Always. */
 bool null_backend_available();
 
