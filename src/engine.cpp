@@ -503,6 +503,13 @@ bool Engine::play_one_period(std::string* error) {
   // device is about to be short of if the sender is behind.
   control_.update(playout_->level_ms(), period_ms(format_));
 
+  // Publish for the control surface. One store each, on the loop's own thread: the
+  // reader takes a snapshot and the audio path never waits for it.
+  published_delay_ms_.store(playout_->level_ms());
+  published_delay_fraction_.store(playout_->level_fraction());
+  published_clock_offset_ppm_.store(control_.offset_ppm());
+  published_clock_ratio_.store(control_.ratio());
+
   return write_period_to_device(error);
 }
 
@@ -526,19 +533,25 @@ bool Engine::write_period_to_device(std::string* error) {
 }
 
 double Engine::delay_ms() const {
-  return playout_ != nullptr ? playout_->level_ms() : 0.0;
+  // The published figure, not the buffer: this is called from the control surface's
+  // thread as well as the receive loop's, and the buffer belongs to the loop.
+  return published_delay_ms_.load();
 }
 
 double Engine::delay_fraction() const {
-  return playout_ != nullptr ? playout_->level_fraction() : 0.0;
+  return published_delay_fraction_.load();
 }
 
 double Engine::egress_delay_ms() const {
-  return delay_line_.offset_ms();
+  return published_egress_delay_ms_.load();
 }
 
 bool Engine::set_egress_delay_ms(double offset_ms, std::string* error) {
-  return delay_line_.set_offset_ms(offset_ms, error);
+  if (!delay_line_.set_offset_ms(offset_ms, error)) {
+    return false;
+  }
+  published_egress_delay_ms_.store(delay_line_.offset_ms());
+  return true;
 }
 
 bool Engine::trigger_test_signal(std::string* error) {
@@ -561,15 +574,37 @@ double Engine::av_delay_ms() const {
 }
 
 double Engine::clock_offset_ppm() const {
-  return control_.offset_ppm();
+  return published_clock_offset_ppm_.load();
 }
 
 double Engine::clock_ratio() const {
-  return control_.ratio();
+  return published_clock_ratio_.load();
 }
 
 uint64_t Engine::silence_periods() const {
-  return silence_periods_;
+  return silence_periods_.load();
+}
+
+EngineStatus Engine::status() {
+  EngineStatus snapshot;
+  snapshot.running = running_.load();
+  snapshot.frames_sent = frames_sent_.load();
+  snapshot.frames_received = frames_received_.load();
+  snapshot.frames_refused = frames_refused_.load();
+  snapshot.silence_periods = silence_periods_.load();
+  snapshot.delay_ms = published_delay_ms_.load();
+  snapshot.delay_fraction = published_delay_fraction_.load();
+  snapshot.egress_delay_ms = published_egress_delay_ms_.load();
+  snapshot.av_delay_ms = av_delay_ms();
+  snapshot.clock_offset_ppm = published_clock_offset_ppm_.load();
+  snapshot.clock_ratio = published_clock_ratio_.load();
+  snapshot.test_signal_channel = test_signal_.channel();
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    snapshot.link_stats_available = link_stats_available_;
+    snapshot.link_stats = link_stats_;
+  }
+  return snapshot;
 }
 
 void Engine::transmit_loop() {
@@ -629,12 +664,23 @@ void Engine::status_loop() {
     std::string error;
     if (link_->stats(&stats, &error)) {
       reported_reason = false;
+      {
+        // Published for the control surface under the one lock in this class; the
+        // audio path never takes it.
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        link_stats_ = stats;
+        link_stats_available_ = true;
+      }
       log().write(LogLevel::info, "link: " + transport::to_string(stats));
     } else if (!reported_reason) {
       // A loopback has no statistics and a link that is not up has none either.
       // Say why once, then again only after it has worked: a line every second
       // saying nothing is how a real fault hides in the log.
       reported_reason = true;
+      {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        link_stats_available_ = false;
+      }
       log().write(LogLevel::info, "link statistics: " + error);
     }
   }
@@ -709,6 +755,7 @@ bool Engine::open(std::string* error) {
     backend_->close();
     return fail(error, "engine: egress.delay_ms: " + reason);
   }
+  published_egress_delay_ms_.store(delay_line_.offset_ms());
 
   delay::TestSignal::Config signal_config;
   signal_config.channels = format_.channels;
@@ -729,6 +776,16 @@ bool Engine::open(std::string* error) {
   prime_reported_ = false;
   silence_periods_ = 0;
   egress_frames_ = 0;
+  // A reopened engine must not show the previous stream's clock figures.
+  published_delay_ms_.store(0.0);
+  published_delay_fraction_.store(0.0);
+  published_clock_offset_ppm_.store(0.0);
+  published_clock_ratio_.store(1.0);
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    link_stats_available_ = false;
+    link_stats_ = transport::LinkStats{};
+  }
   // A receiver does not play the instant the first period arrives: it waits until
   // the level is what the latency setting bought. The deadline is what keeps a link
   // that never fills from being silence for ever — after it, playout starts with

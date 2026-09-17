@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,39 @@
 #include "wire/frame.hpp"
 
 namespace aes67_srt {
+
+/**
+ * What the engine looks like from another thread, as one plain value.
+ *
+ * The control surface polls the appliance from its own thread while the
+ * device-paced loops run, so the figures it needs cannot be read off the live
+ * objects — the playout buffer, the control and the resampler belong to the receive
+ * thread, and a concurrent read of them is a data race, not a stale reading. The
+ * loops publish the figures here as atomics each period instead, and
+ * `Engine::status()` copies them out. It is a snapshot for a person, not a
+ * synchronisation primitive: a value may move between two reads, and nothing in the
+ * audio path ever waits on it.
+ */
+struct EngineStatus {
+  bool running = false;
+  uint64_t frames_sent = 0;
+  uint64_t frames_received = 0;
+  uint64_t frames_refused = 0;
+  uint64_t silence_periods = 0;
+  /** The clock's playout level, in milliseconds — the delay figure (ticket 12). */
+  double delay_ms = 0.0;
+  double delay_fraction = 0.0;
+  /** The A/V offset the delay line is applying (decision 8). */
+  double egress_delay_ms = 0.0;
+  /** Transport latency + playout level + A/V offset + codec. */
+  double av_delay_ms = 0.0;
+  double clock_offset_ppm = 0.0;
+  double clock_ratio = 1.0;
+  int test_signal_channel = -1;
+  /** False on a loopback, or before the link is up: there is nothing to report. */
+  bool link_stats_available = false;
+  transport::LinkStats link_stats;
+};
 
 /**
  * The engine: the audio device to the wire and back.
@@ -218,6 +252,14 @@ class Engine {
   /** Periods the device was fed silence for because nothing could be played. */
   uint64_t silence_periods() const;
 
+  /**
+   * Everything the control surface shows, as one thread-safe snapshot.
+   *
+   * Safe to call from any thread at any time, including while both loops run; it
+   * reads atomics the loops publish and copies the link statistics under a lock.
+   */
+  EngineStatus status();
+
   /** The device, for the caller that has to feed or read it. Not owned here. */
   audio::AudioBackend* backend();
   const audio::AudioBackend* backend() const;
@@ -287,15 +329,38 @@ class Engine {
   bool playing_ = false;
   uint64_t priming_periods_ = 0;
   bool prime_reported_ = false;
-  uint64_t silence_periods_ = 0;
+  std::atomic<uint64_t> silence_periods_{0};
 
   /** The link id every frame of this link carries; see the note in the .cpp. */
   uint16_t link_id_ = 0;
   uint64_t sequence_ = 0;
   uint64_t sample_position_ = 0;
-  uint64_t frames_sent_ = 0;
-  uint64_t frames_received_ = 0;
-  uint64_t frames_refused_ = 0;
+  /** Counters, published for the control surface: the loops are the only writers.
+   */
+  std::atomic<uint64_t> frames_sent_{0};
+  std::atomic<uint64_t> frames_received_{0};
+  std::atomic<uint64_t> frames_refused_{0};
+
+  /**
+   * The figures the receive loop publishes for `status()`, one store each per
+   * period. They are atomics rather than a locked struct because the loop must
+   * never wait on a reader: a mutex here would let the control surface stall the
+   * audio path.
+   */
+  std::atomic<double> published_delay_ms_{0.0};
+  std::atomic<double> published_delay_fraction_{0.0};
+  std::atomic<double> published_egress_delay_ms_{0.0};
+  std::atomic<double> published_clock_offset_ppm_{0.0};
+  std::atomic<double> published_clock_ratio_{1.0};
+
+  /**
+   * The link statistics, which only the status thread fills. They are a block
+   * rather than a scalar, so this is the one field behind a lock; the lock is never
+   * held by the audio path.
+   */
+  std::mutex stats_mutex_;
+  bool link_stats_available_ = false;
+  transport::LinkStats link_stats_;
 
   /**
    * One buffer per direction, deliberately.

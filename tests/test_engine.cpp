@@ -21,6 +21,7 @@ namespace {
 
 using aes67_srt::Config;
 using aes67_srt::Engine;
+using aes67_srt::EngineStatus;
 using aes67_srt::audio::AudioFormat;
 using aes67_srt::wire::PayloadType;
 
@@ -512,6 +513,41 @@ TEST_CASE(engine_delivers_the_full_rate_over_a_real_srt_link) {
 
   std::cout << "    engine full-rate link: site sent " << site.frames_sent()
             << ", remote received " << remote.frames_received() << std::endl;
+}
+
+TEST_CASE(engine_the_status_snapshot_is_readable_while_the_loops_run) {
+  // The control surface polls from its own thread while the device-paced loops run,
+  // so the snapshot is read concurrently on purpose: this exercises the race it
+  // exists to prevent rather than describing it.
+  Config config = engine_config(1, "loopback", 0);
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+
+  int result = -1;
+  std::thread running([&engine, &result] { result = engine.run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  uint64_t previous_sent = 0;
+  bool saw_running = false;
+  for (int i = 0; i < 50; ++i) {
+    EngineStatus status = engine.status();
+    saw_running = saw_running || status.running;
+    CHECK(status.frames_sent >= previous_sent);
+    previous_sent = status.frames_sent;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  CHECK(saw_running);
+
+  engine.stop();
+  running.join();
+  CHECK_EQ(result, 0);
+
+  const EngineStatus final_status = engine.status();
+  CHECK(!final_status.running);
+  CHECK(final_status.frames_sent > 0);
+  // A loopback has no link statistics, and the snapshot says so rather than zeroes.
+  CHECK(!final_status.link_stats_available);
 }
 
 TEST_CASE(engine_says_once_that_a_loopback_has_no_link_statistics) {
