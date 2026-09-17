@@ -205,7 +205,7 @@ against `:338`, verified against the installed 1.5.7). **The whole "show me
 the delay" requirement needs no invention: `msRcvTsbPdDelay` is the number, and `msRcvBuf` is its
 trend.**
 
-## The receive timeout must be zero, and 0 *is* non-blocking
+## The receive and send timeouts must be zero, and 0 *is* non-blocking
 
 `SRTO_RCVTIMEO` **"limits the time up to which the receiving operation will block ... The -1 value
 means no time limit"** (`docs/API/API-socket-options.md`; default `-1`). The range is `-1, 0..`, so
@@ -239,6 +239,15 @@ The playout level had not settled when the run ended — 447 ms at the listener 
 the +200 ppm clamp, 88 ms at the caller with −90.8 ppm — which is expected rather than a fault: the
 level loop's period is 2,000 s, and the clock research records that a 10 ppm offset takes ~24 minutes
 to converge. A short run measures throughput, not the clock; the ppm figure needs the ~20 minute run.
+
+**The send has the same trap, and it is the one that made the appliance unkillable.** `SRTO_SNDTIMEO`
+"limit[s] the time up to which the sending operation will block ... The -1 value means no time limit"
+(default `-1`), so 0 is non-blocking there too. Left unbounded, a peer that accepts a connection and
+then reads nothing fills the sender's flow-control window and `srt_sendmsg` blocks for ever — and
+because the transmit loop only checks `stop()` between turns, the process ignores SIGTERM and systemd
+has to SIGKILL it. Reproduced on 2026-09-17 with a `tx`-only peer that never reads: the sender parked
+at `send buffer 8426 ms` and survived SIGTERM; with `SRTO_SNDTIMEO = 0` it exits cleanly. This is the
+SIGTERM hang filed as issue #16, and it was a network call with no time limit, not a logic bug.
 
 ## Bonding and groups: not a v1 path, and not a drop-in later
 

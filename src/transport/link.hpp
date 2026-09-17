@@ -97,6 +97,18 @@ class Link {
 
   void set_receive_timeout_ms(int timeout_ms);
 
+  /**
+   * Bound how long a send waits when the peer has stopped reading. **0 is
+   * non-blocking**, by the same documentation the receive timeout rests on
+   * (`SRTO_SNDTIMEO` limits how long the send blocks; only -1 is no limit).
+   *
+   * Without this the send blocks for ever once the peer's flow-control window
+   * fills — the transmit loop is device-paced, so a network call that never
+   * returns is a loop that never sees the stop flag, and the process will not
+   * exit on SIGTERM. It is the same trap the receive timeout had.
+   */
+  void set_send_timeout_ms(int timeout_ms);
+
   /** Statistics for the UI. Fails rather than returning plausible zeroes. */
   bool stats(LinkStats* out, std::string* error) const;
 

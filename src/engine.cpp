@@ -27,6 +27,20 @@ namespace {
  */
 constexpr int k_receive_poll_ms = 0;
 
+/**
+ * How long a send may wait when the peer has stopped reading.
+ *
+ * Zero for the same reason, and it is the other half of the same trap: a peer
+ * whose receive buffer is full stops the sender's flow-control window from
+ * draining, and an unbounded `srt_sendmsg` leaves the transmit loop inside a
+ * network call for ever. The loop is device-paced and only checks `stop()` between
+ * turns, so the appliance then ignores SIGTERM and cannot be stopped by systemd.
+ * Measured: a `tx`-only peer that accepts and never reads parked the sender with
+ * `send buffer 8426 ms`, and SIGTERM did nothing. Bounded, the send returns at once
+ * and the loop's own retry-and-check cycle runs.
+ */
+constexpr int k_send_poll_ms = 0;
+
 /** A direction that failed waits this long before trying again. */
 constexpr int k_retry_delay_ms = 10;
 
@@ -639,6 +653,10 @@ bool Engine::open(std::string* error) {
   // See k_receive_poll_ms for why the 2 ms this used to be was not short enough,
   // and why 0 is documented to be non-blocking rather than guessed.
   link_->set_receive_timeout_ms(k_receive_poll_ms);
+  // The send needs the same bound as the receive: a peer that stops reading must
+  // not be able to park this loop inside a network call, or the process can never
+  // be stopped. See k_send_poll_ms.
+  link_->set_send_timeout_ms(k_send_poll_ms);
 
   // The clock, built per open rather than per process: a link that is reopened is a
   // stream whose sample positions may well start somewhere else, and a buffer still

@@ -344,6 +344,67 @@ TEST_CASE(transport_the_statistics_render_as_one_line) {
   CHECK(has("dropped 0"));
 }
 
+TEST_CASE(
+    transport_a_send_to_a_peer_that_stops_reading_returns_rather_than_blocking) {
+  // The other half of the non-blocking trap (issue #16): a peer that accepts the
+  // connection and then reads nothing fills the sender's flow-control window, and
+  // an unbounded srt_sendmsg parks the device-paced transmit loop inside a network
+  // call — so the appliance never sees SIGTERM and systemd cannot stop it. Bounded
+  // (SRTO_SNDTIMEO = 0, documented as a zero-millisecond limit), the send returns
+  // and the loop's own retry-and-check cycle runs.
+  if (skip_without_srt("the stalled-peer send test")) {
+    return;
+  }
+  const int listener_port = 19811;
+  const int caller_port = 19812;
+
+  Link listener;
+  Link caller;
+  std::string listener_error;
+  std::atomic<bool> listener_up{false};
+  std::thread accepting([&] {
+    listener.set_receive_timeout_ms(300);
+    listener_up = listener.open(localhost_config("listener", listener_port, ""),
+                                &listener_error);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+  std::string caller_error;
+  const bool caller_up =
+      caller.open(localhost_config("caller", caller_port,
+                                   "127.0.0.1:" + std::to_string(listener_port)),
+                  &caller_error);
+  accepting.join();
+  CHECK(listener_up.load());
+  CHECK(caller_up);
+  if (!caller_up) {
+    test::report_failure("the stalled-peer link did not come up", __FILE__,
+                         __LINE__, caller_error + " / " + listener_error);
+    return;
+  }
+
+  caller.set_send_timeout_ms(0);
+  const std::vector<uint8_t> message(1200, 0x5a);
+  bool refused = false;
+  const auto start = std::chrono::steady_clock::now();
+  // The window fills after a few thousand messages; without the bound this loop
+  // would never reach the check.
+  for (int sent = 0; sent < 200000 && !refused; ++sent) {
+    if (!caller.send_message(message.data(), message.size(), &caller_error)) {
+      refused = true;
+    }
+  }
+  const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+          .count();
+
+  CHECK(refused);
+  CHECK(elapsed < 5.0);
+
+  caller.close();
+  listener.close();
+}
+
 TEST_CASE(transport_carries_frames_both_ways_on_one_connection) {
   if (skip_without_srt("the loopback test")) {
     return;

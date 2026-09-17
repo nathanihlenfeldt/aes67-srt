@@ -163,6 +163,16 @@ void Link::set_receive_timeout_ms(int timeout_ms) {
 #endif
 }
 
+void Link::set_send_timeout_ms(int timeout_ms) {
+#if AES67_SRT_WITH_SRT
+  if (impl_->socket != SRT_INVALID_SOCK) {
+    set_int(impl_->socket, SRTO_SNDTIMEO, timeout_ms);
+  }
+#else
+  (void)timeout_ms;
+#endif
+}
+
 std::string Link::peer_description() const {
   if (!is_open()) {
     return "(down)";
