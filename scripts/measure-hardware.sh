@@ -5,6 +5,9 @@
 #
 #   bash measure-hardware.sh            # writes hardware-report-<host>-<date>.txt
 #   curl -fsSL <url> -o /tmp/measure.sh && bash /tmp/measure.sh
+#   bash measure-hardware.sh --commission-loopback
+#                                       # also wires the daemon and proves the whole
+#                                       # path on one box (see the promise below)
 #
 # SAFE TO PIPE FROM A URL, and it says so rather than asking you to trust it:
 #
@@ -12,7 +15,12 @@
 #   * installs nothing and changes no configuration
 #   * writes exactly one file, the report, in the directory you run it from
 #   * compiles two small probes in a temporary directory and deletes it
-#   * reads the daemon's REST API on localhost; it does not write to it
+#   * reads the daemon's REST API on localhost. The default run does not write to
+#     it. **--commission-loopback is the one exception, and it says so**: it asks
+#     our own binary to publish one AES67 source per block and subscribe a sink to
+#     each — two documents per block — because that is how the never-before-proved
+#     half gets proved. It is off unless you ask for it, and it is the only writing
+#     this script does.
 #
 # Source of truth: scripts/measure-hardware.sh in the aes67-srt repository, which
 # is private. This file is a mirror for running on an appliance that cannot clone
@@ -25,6 +33,15 @@
 #
 # Deliberately NOT `set -e`: a missing tool should be reported, not abort the run.
 set -uo pipefail
+
+COMMISSION_LOOPBACK=false
+for argument in "$@"; do
+  case "${argument}" in
+    --commission-loopback) COMMISSION_LOOPBACK=true ;;
+    *) printf 'unknown argument: %s (only --commission-loopback is accepted)\n' "${argument}"
+       exit 2 ;;
+  esac
+done
 
 REPORT="hardware-report-$(hostname -s 2>/dev/null || echo host)-$(date +%Y%m%d-%H%M).txt"
 exec > >(tee "${REPORT}") 2>&1
@@ -144,6 +161,34 @@ if ! arecord -l 2>/dev/null | grep -qi ravenna; then
   note "aes67-daemon are not installed or not loaded, so sections 4 and 5 cannot be"
   note "measured until they are. Expected on a bare Pi; worth knowing before the"
   note "measurement is scheduled rather than during it."
+fi
+
+# Whether 64 channels actually *stream*, which the earlier session did not settle:
+# it opened the device and started recording for one second, which proves the shape
+# is accepted and nothing about continuity. Ten seconds is long enough for a stalled
+# engine, a starved clock or an xrun to show up, and arecord reports overruns on
+# stderr where they land in the report.
+if have arecord && arecord -l 2>/dev/null | grep -qi ravenna; then
+  printf '\n--- ten seconds of 64-channel capture (continuity, not just opening)\n'
+  note "Watch for: a non-zero exit, 'overrun' or 'underrun' in the output, and how"
+  note "long the run actually took. A clean ten seconds at 64ch is the first half of"
+  note "the audio module's proof; the second half is our own binary below."
+  started=$(date +%s)
+  if arecord -D plughw:RAVENNA -f S24_3LE -r 48000 -c 64 -d 10 /dev/null 2>&1 |
+    sed 's/^/    /'; then
+    note "capture completed"
+  else
+    note "^^ capture did NOT complete - that is the finding, not a script error"
+  fi
+  note "wall clock: $(( $(date +%s) - started )) s for 10 s of audio (more means it stalled)"
+
+  # The device's own xrun counters, when the kernel exposes them. These are the
+  # numbers nobody argues with.
+  for status in /proc/asound/card*/pcm*c/sub*/status; do
+    [ -r "${status}" ] || continue
+    printf '\n--- %s\n' "${status}"
+    sed 's/^/    /' "${status}"
+  done
 fi
 
 # ---------------------------------------------------------------------------
@@ -480,7 +525,82 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-section "9. What each measurement above answers"
+section "9. The whole path on one box (ticket 08: our binary, the daemon, the device)"
+# ---------------------------------------------------------------------------
+# The only section that writes to the daemon: it asks our binary to publish one
+# AES67 source per block and subscribe a sink to each, so the daemon carries this
+# box's audio back to itself. What comes out is the answer to the question the
+# project has carried since ticket 03 — does the daemon accept the documents we
+# build, and does it report packets arriving — and it is the criterion of ticket 08
+# that no runner can reach.
+if [ ! -x build/aes67-srt ]; then
+  note "no build/aes67-srt. Build it first:"
+  note "  cmake -S . -B build && cmake --build build --parallel"
+  note "Without a clone there is no binary and this section cannot run at all, which"
+  note "is why it says so rather than measuring something else instead."
+elif ! curl -fsS --max-time 3 http://127.0.0.1:8080/api/config >/dev/null 2>&1; then
+  note "the daemon is not answering on 127.0.0.1:8080, so there is nothing to wire up"
+elif [ "${COMMISSION_LOOPBACK}" != "true" ]; then
+  note "not run. This section writes to the daemon, so it is off unless you ask:"
+  note "  bash $0 --commission-loopback"
+  note "It will publish one source per block and subscribe one sink per block."
+else
+  printf '\n--- the configuration, before anything is wired\n'
+  try "validate" ./build/aes67-srt -c config/aes67-srt.conf --validate
+
+  # The settings that decide whether any of this can work. `streamer_enabled` is
+  # the one nobody has measured: provisioning sets it false because it would
+  # capture the RAVENNA device, and whether a source handed over REST needs it true
+  # is unknown. A zero in "receiving" below, with everything else healthy, points
+  # at exactly that and nothing else.
+  if have curl; then
+    printf '\n--- daemon settings this depends on\n'
+    note "interface_name must not be lo, and auto_sinks_update should be false:"
+    note "the first never sees PTP or RTP, the second can retarget a sink we wired."
+    note "streamer_enabled is the open question (see docs/research/aes67-daemon-64ch.md)."
+    curl -fsS --max-time 5 http://127.0.0.1:8080/api/config 2>/dev/null |
+      grep -oE '"(interface_name|streamer_enabled|auto_sinks_update|tic_frame_size_at_1fs|rtp_mcast_base|rtp_port|ptp_domain)"[^,}]*' |
+      sed 's/^/    /'
+  fi
+
+  printf '\n--- our binary, commissioning for 15 seconds\n'
+  appliance_log="$(mktemp)"
+  ./build/aes67-srt -c config/aes67-srt.conf --commission-loopback \
+    >"${appliance_log}" 2>&1 &
+  appliance=$!
+  sleep 15
+  # SIGTERM, because that is what systemd sends and the appliance is built to stop
+  # cleanly on it. A non-zero exit means commissioning failed and said why.
+  kill -TERM "${appliance}" 2>/dev/null
+  wait "${appliance}"
+  appliance_status=$?
+  sed 's/^/    /' "${appliance_log}"
+  note "exit ${appliance_status} (commissioning failure exits non-zero on purpose)"
+  rm -f "${appliance_log}"
+
+  printf '\n--- what the daemon holds now\n'
+  for endpoint in /api/sinks /api/sources; do
+    printf '\n--- GET %s\n' "${endpoint}"
+    curl -fsS --max-time 5 "http://127.0.0.1:8080${endpoint}" 2>&1 |
+      head -c 8000 | sed 's/^/    /'
+    printf '\n'
+  done
+
+  # The per-sink flags, one by one: which block is silent is the whole question,
+  # and a count at the end averages that away.
+  printf '\n--- per-sink reception (receiving_rtp_packet is the answer that matters)\n'
+  for id in 0 1 2 3 4 5 6 7; do
+    printf '    sink %s: ' "${id}"
+    curl -fsS --max-time 5 "http://127.0.0.1:8080/api/sink/status/${id}" 2>&1 |
+      head -c 400
+    printf '\n'
+  done
+  note "a 400 or 404 here means the daemon holds no stream for that sink, which is"
+  note "normal for a block that was never wired - not a failure of anything."
+fi
+
+# ---------------------------------------------------------------------------
+section "10. What each measurement above answers"
 # ---------------------------------------------------------------------------
 cat <<'SUMMARY'
     1  The machine        cpu budget everything else is measured against
@@ -495,6 +615,9 @@ cat <<'SUMMARY'
     7  Opus               the encoder's lookahead, and whether 64 channels fit
                           at 128 kbit/s each (ticket 04)
     8  Resampling CPU     the clock module's deciding number (ticket 03)
+    9  The whole path     whether the daemon accepts the documents we build, and
+                          whether its sinks receive our own sources
+                          (ticket 08's hardware criterion; needs --commission-loopback)
 
     Send the whole report file back. A measurement that could not be taken is as
     useful as one that could: it says what is missing from the machine.

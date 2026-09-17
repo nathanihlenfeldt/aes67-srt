@@ -8,3 +8,8 @@
 # compile_commands.json there for clangd and the agents that read it.
 build/
 build-*/
+
+# Hardware reports. measure-hardware.sh writes one into the directory it is run
+# from, and the runbook has you run it from the repository root, so it would
+# otherwise sit there as an untracked file after every session.
+hardware-report-*.txt

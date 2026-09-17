@@ -12,11 +12,14 @@ On the appliance, from a clone of this repository:
 # once: the tools the measurements need
 sudo apt install -y libsrt-openssl-dev libopus-dev libsamplerate0-dev alsa-utils
 
-# build our own tests, so section 3 can run the loopback on real hardware
+# build our own tests and the appliance, so sections 3 and 9 can run on real hardware
 cmake -S . -B build && cmake --build build --parallel
 
 # measure
 bash scripts/measure-hardware.sh
+
+# and then the one section that writes to the daemon, which is off by default
+bash scripts/measure-hardware.sh --commission-loopback
 ```
 
 **If the appliance cannot clone this repository** (it is private), the same script is published as a
@@ -28,7 +31,23 @@ bash /tmp/measure.sh
 ```
 
 It needs **no root**, installs nothing, and writes one report file in the directory you run it from.
-The only section it cannot cover without a clone is §3, the loopback tests, and it says so.
+The only sections it cannot cover without a clone are §3 and §9, and it says so — those two need our
+own binary. **`--commission-loopback` is the only thing the script does that writes anywhere**: it
+asks our binary to publish one AES67 source per block on the daemon and subscribe a sink to each,
+which is two REST documents per block. Everything else is read-only.
+
+### The three things that matter most, in this order
+
+1. **§4's ten-second capture.** The earlier session proved the device *opens* at 64 channels; it did
+   not prove it streams. Watch for overruns and for the wall clock against the audio duration.
+2. **§9, the commissioning loopback.** This is issue #9's hardware criterion and it has never run
+   against the real daemon. What answers it is the counting line — *"N sources published, N sinks
+   subscribed, **N receiving**"* — and the per-sink flags after it, because which block is silent is
+   the whole question. **If everything is green except "receiving", check `streamer_enabled` in §9's
+   settings list**: provisioning sets it false, and whether a source handed over REST needs it true
+   is the open question this run answers.
+3. **§5's PTP state.** Locked or not is the difference between audio and no audio, and it is the
+   commonest reason a healthy-looking appliance is silent.
 
 ### Provisioning the daemon, without which sections 4 and 5 cannot be measured
 
@@ -66,6 +85,7 @@ that could not be measured, because a missing measurement says what the machine 
 | 6 | AES-CTR throughput | Whether a passphrase link is affordable at 148 Mbit/s | #7 |
 | 7 | Opus lookahead and 64-channel encode/decode CPU | **Whether phase 2 fits on a Pi at all** | #4 |
 | 8 | Resampling CPU at 64ch, +10 ppm | **The clock module's deciding number** | #3 |
+| 9 | Our binary + the daemon + the device, on one box | **Whether the AES67 half works at all** — the one criterion no runner can reach | #9 |
 
 ## How to read the numbers
 
