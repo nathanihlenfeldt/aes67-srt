@@ -10,16 +10,17 @@
 namespace {
 
 void print_usage(const char* program) {
-  std::cout << "usage: " << program << " [-c <config>] [-f] [--validate] "
-            << "[-a <addr>] [-p <port>] [-v] [-h]\n"
-            << "\n"
-            << "  -c <config>   configuration file (default /etc/aes67-srt.conf)\n"
-            << "  -f            fake mode: null audio backend, fake daemon\n"
-            << "  --validate    check the configuration and exit; nothing runs\n"
-            << "  -a <addr>     override http_addr\n"
-            << "  -p <port>     override http_port\n"
-            << "  -v            print version and exit\n"
-            << "  -h            this message\n";
+  std::cout
+      << "usage: " << program << " [-c <config>] [-f] [--validate] "
+      << "[-a <addr>] [-p <port>] [-v] [-h]\n"
+      << "\n"
+      << "  -c <config>   configuration file (default /etc/aes67-srt.conf)\n"
+      << "  -f            fake mode: null audio, fake daemon, loopback transport\n"
+      << "  --validate    check the configuration and exit; nothing runs\n"
+      << "  -a <addr>     override http_addr\n"
+      << "  -p <port>     override http_port\n"
+      << "  -v            print version and exit\n"
+      << "  -h            this message\n";
 }
 
 }  // namespace

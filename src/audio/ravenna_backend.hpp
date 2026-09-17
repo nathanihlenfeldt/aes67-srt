@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <shared_mutex>
 #include <string>
 
 #include <alsa/asoundlib.h>
@@ -104,6 +105,23 @@ class RavennaBackend : public AudioBackend {
   /** Monotonic seconds of the last captured frame, and of the last reopen. */
   double last_frames_at_{0.0};
   double last_recover_at_{0.0};
+
+  /**
+   * Guards the substreams against the one thing that touches both of them.
+   *
+   * `read()` and `write()` take it *shared*, so the two directions run on their
+   * own threads without waiting for each other — which is the whole reason they
+   * have a thread each. `recover_if_stalled()` takes it *exclusive*, because it
+   * closes and reopens *both* substreams: without this, a reopen on the capture
+   * thread would free the playback handle while the playback thread was inside a
+   * call on it. That is not a theoretical race — the stall it recovers from
+   * happens every time the daemon restarts.
+   *
+   * `open()` and `close()` deliberately do not take it: they belong to the
+   * control path, which the engine uses before the threads start and after they
+   * have joined. Recovery is the one exception and holds it on their behalf.
+   */
+  mutable std::shared_mutex path_mutex_;
 
   /** Read from the status page, so atomic; see the same note in NullBackend. */
   std::atomic<unsigned> overruns_{0};

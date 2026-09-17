@@ -1,6 +1,7 @@
 #include "audio/backend.hpp"
 #include "audio/null_backend.hpp"
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -145,6 +146,38 @@ TEST_CASE(audio_the_format_the_configuration_asks_for_becomes_the_runtime_format
   // width, so the two cannot drift apart without this failing.
   CHECK_EQ(aes67_srt::wire::sample_bytes(PayloadType::pcm_l24), l24.sample_bytes);
   CHECK_EQ(aes67_srt::wire::sample_bytes(PayloadType::pcm_l16), l16.sample_bytes);
+}
+
+TEST_CASE(audio_the_null_backend_ticks_at_its_nominal_rate) {
+  // The device paces the engine, and that is load-bearing rather than cosmetic.
+  // This was not obvious until the whole appliance was run for the first time:
+  // with a device that returned immediately, the transmit loop produced frames
+  // thousands of times faster than realtime and dropped audio on the floor of
+  // its own loopback queue within two seconds.
+  NullBackend backend;
+  std::string error;
+  CHECK(backend.open(AudioFormat(), &error));
+
+  const AudioFormat& format = backend.format();
+  std::vector<uint8_t> period(format.period_bytes(), 0);
+  const int periods = 10;
+  const auto started = std::chrono::steady_clock::now();
+  for (int index = 0; index < periods; ++index) {
+    CHECK(backend.read(period.data(), format.period_frames, &error));
+  }
+  const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - started)
+                                .count();
+
+  // Ten one-millisecond periods. The bounds are loose in both directions: a
+  // loaded CI machine may overshoot, while the failure this exists to catch —
+  // no pacing at all — is three orders of magnitude away from here.
+  CHECK(elapsed_ms >= 8.0);
+  CHECK(elapsed_ms <= 500.0);
+
+  // And the write direction has its own schedule, so neither waits out the
+  // other's period: ten writes back to back are paced too.
+  CHECK_EQ(backend.underruns(), 0u);
 }
 
 TEST_CASE(audio_the_factory_refuses_a_backend_this_build_does_not_have) {

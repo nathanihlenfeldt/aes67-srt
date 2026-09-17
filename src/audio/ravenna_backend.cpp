@@ -269,6 +269,10 @@ void RavennaBackend::recover_if_stalled() {
   }
   last_recover_at_ = now;
 
+  // Exclusive, because this closes and reopens *both* substreams: the other
+  // direction's thread must not be inside a call on a handle being freed.
+  std::unique_lock<std::shared_mutex> lock(path_mutex_);
+
   // Reopening the PCM re-triggers both substreams, which is what makes the
   // driver's engine run again after the daemon restarted it underneath us. The
   // streams keep reporting RUNNING the whole time, so this is the only way to
@@ -304,66 +308,79 @@ bool RavennaBackend::read(uint8_t* destination, unsigned frames,
   const size_t frame_bytes = format_.frames_to_bytes(1);
   unsigned remaining = frames;
   size_t offset = 0;
-  while (remaining > 0) {
-    const int ready = snd_pcm_wait(capture_, k_wait_timeout_ms);
-    if (ready < 0) {
-      fill_silence(destination + offset, remaining);
-      return fail(error,
-                  "capture wait failed: " + std::string(snd_strerror(ready)));
-    }
-    if (ready == 0) {
-      // Half a second with nothing captured at all. The caller still gets its
-      // whole period — silence — because a short read would push the arithmetic
-      // of starvation into every caller, but it gets a reason as well: on this
-      // appliance a capture device that produces nothing is usually unlocked
-      // PTP or a daemon bound to `lo`, and both are silent failures elsewhere.
-      fill_silence(destination + offset, remaining);
-      recover_if_stalled();
-      return fail(error, "RAVENNA capture produced nothing for " +
-                             std::to_string(k_wait_timeout_ms) +
-                             " ms: is the PTP clock locked, and is the daemon's "
-                             "interface_name off \"lo\"?");
-    }
-
-    const snd_pcm_sframes_t got =
-        snd_pcm_readi(capture_, destination + offset, remaining);
-    if (got == -EPIPE) {
-      // Overrun: the device buffer was not drained in time, so those frames are
-      // gone. Count it, recover, and return silence for the rest of the period
-      // rather than failing the read: failing made the caller sleep, which
-      // turned one overrun into a cascade.
-      ++overruns_;
-      if (snd_pcm_prepare(capture_) < 0) {
-        fill_silence(destination + offset, remaining);
-        return fail(error, "capture overrun and the device would not prepare");
-      }
-      // prepare() leaves the stream PREPARED, which stops the driver's tick for
-      // this direction: trigger it again or capture never resumes.
-      std::string restart_error;
-      if (!start_stream(capture_, &restart_error)) {
-        log().write(LogLevel::warn,
-                    "cannot restart capture after an overrun: " + restart_error);
-      }
-      fill_silence(destination + offset, remaining);
-      if (error != nullptr) {
-        *error = "capture overrun (recovered)";
-      }
-      return true;
-    }
-    if (got < 0) {
-      if (snd_pcm_recover(capture_, static_cast<int>(got), 1) < 0) {
+  bool stalled = false;
+  {
+    // Shared, not exclusive: the two directions have a thread each so that
+    // neither waits for the other. Recovery takes this exclusively, and is
+    // called *after* this scope ends — upgrading it on this thread would
+    // deadlock against itself.
+    std::shared_lock<std::shared_mutex> lock(path_mutex_);
+    while (remaining > 0) {
+      const int ready = snd_pcm_wait(capture_, k_wait_timeout_ms);
+      if (ready < 0) {
         fill_silence(destination + offset, remaining);
         return fail(error,
-                    "capture read failed: " + std::string(snd_strerror(got)));
+                    "capture wait failed: " + std::string(snd_strerror(ready)));
       }
-      continue;
+      if (ready == 0) {
+        // Half a second with nothing captured at all. The caller still gets its
+        // whole period — silence — because a short read would push the arithmetic
+        // of starvation into every caller, but it gets a reason as well: on this
+        // appliance a capture device that produces nothing is usually unlocked
+        // PTP or a daemon bound to `lo`, and both are silent failures elsewhere.
+        fill_silence(destination + offset, remaining);
+        stalled = true;
+        break;
+      }
+
+      const snd_pcm_sframes_t got =
+          snd_pcm_readi(capture_, destination + offset, remaining);
+      if (got == -EPIPE) {
+        // Overrun: the device buffer was not drained in time, so those frames are
+        // gone. Count it, recover, and return silence for the rest of the period
+        // rather than failing the read: failing made the caller sleep, which
+        // turned one overrun into a cascade.
+        ++overruns_;
+        if (snd_pcm_prepare(capture_) < 0) {
+          fill_silence(destination + offset, remaining);
+          return fail(error, "capture overrun and the device would not prepare");
+        }
+        // prepare() leaves the stream PREPARED, which stops the driver's tick for
+        // this direction: trigger it again or capture never resumes.
+        std::string restart_error;
+        if (!start_stream(capture_, &restart_error)) {
+          log().write(LogLevel::warn,
+                      "cannot restart capture after an overrun: " + restart_error);
+        }
+        fill_silence(destination + offset, remaining);
+        if (error != nullptr) {
+          *error = "capture overrun (recovered)";
+        }
+        return true;
+      }
+      if (got < 0) {
+        if (snd_pcm_recover(capture_, static_cast<int>(got), 1) < 0) {
+          fill_silence(destination + offset, remaining);
+          return fail(error,
+                      "capture read failed: " + std::string(snd_strerror(got)));
+        }
+        continue;
+      }
+      if (got == 0) {
+        continue;
+      }
+      offset += static_cast<size_t>(got) * frame_bytes;
+      remaining -= static_cast<unsigned>(got);
+      last_frames_at_ = mono_seconds();
     }
-    if (got == 0) {
-      continue;
-    }
-    offset += static_cast<size_t>(got) * frame_bytes;
-    remaining -= static_cast<unsigned>(got);
-    last_frames_at_ = mono_seconds();
+  }
+
+  if (stalled) {
+    recover_if_stalled();
+    return fail(error, "RAVENNA capture produced nothing for " +
+                           std::to_string(k_wait_timeout_ms) +
+                           " ms: is the PTP clock locked, and is the daemon's "
+                           "interface_name off \"lo\"?");
   }
   return true;
 }
@@ -376,6 +393,10 @@ bool RavennaBackend::write(const uint8_t* source, unsigned frames,
   if (source == nullptr) {
     return fail(error, "no audio to write");
   }
+
+  // Shared for the whole call: the two directions run on their own threads, and
+  // only a stall recovery needs them both quiet.
+  std::shared_lock<std::shared_mutex> lock(path_mutex_);
 
   const size_t frame_bytes = format_.frames_to_bytes(1);
   unsigned remaining = frames;

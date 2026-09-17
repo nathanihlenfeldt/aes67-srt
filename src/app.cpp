@@ -5,6 +5,7 @@
 #include <csignal>
 #include <thread>
 
+#include "engine.hpp"
 #include "log.hpp"
 #include "version.hpp"
 
@@ -31,8 +32,24 @@ bool App::fake() const {
   return fake_;
 }
 
+void App::apply_fake() {
+  // `-f` means "touch nothing real", and there are exactly three ways out of
+  // this process: the audio device, the daemon, and the link. All three are
+  // replaced here, so a production configuration can be run on a laptop without
+  // being edited — which is the whole point of having the switch.
+  config_.audio.backend = "null";
+  config_.daemon.fake = true;
+  config_.link.mode = "loopback";
+  // With a loopback there is no peer to reach, and leaving a stale one in place
+  // would put a hostname in the log that nothing is connecting to.
+  config_.link.peer.clear();
+}
+
 void App::set_fake(bool fake) {
   fake_ = fake;
+  if (fake_) {
+    apply_fake();
+  }
 }
 
 void App::describe() const {
@@ -58,30 +75,58 @@ void App::describe() const {
                 "fake mode: null audio backend, fake daemon, loopback transport");
   }
 
-  // Say plainly what is missing, so a build that carries no audio is never
-  // mistaken for one that has lost its audio.
+  // What is missing from the *path*, now that the modules themselves exist:
+  // there is no clock stage and no delay stage, so audio passes through
+  // unaltered, and no control surface can see or steer any of it yet. A build
+  // that carries audio should say where it stops, for the same reason the old
+  // line said what it did not carry at all.
   log().write(LogLevel::info,
-              "not built yet: audio (ticket 08), transport (ticket 07), "
-              "clock (ticket 11), control surface (tickets 13-14)");
+              "audio path: device -> blocks -> frame -> link and back, passing "
+              "through unaltered: no clock stage (ticket 11), no delay stage "
+              "(ticket 12), no control surface (tickets 13-14)");
+}
+
+void App::request_stop() {
+  stop_requested.store(true);
 }
 
 int App::run() {
   std::signal(SIGINT, handle_signal);
   std::signal(SIGTERM, handle_signal);
+  // Reset for a second run in the same process (which is what a test does): the
+  // flag is a file-scope global because a signal handler cannot be given one.
+  stop_requested.store(false);
 
+  // Applied again here, not only in set_fake(): the public calls can arrive in
+  // either order, and what matters is that the configuration the engine is built
+  // from is the one described and the one that runs.
+  if (fake_) {
+    apply_fake();
+  }
   describe();
-  log().write(LogLevel::info,
-              "running (skeleton: no audio path yet - Ctrl-C to stop)");
 
-  // Nothing to serve and nothing to move yet, so this waits for a signal rather
-  // than exiting: a daemon that returns immediately would be restarted in a
-  // loop by systemd, which looks exactly like a crash.
-  while (!stop_requested.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  Engine engine;
+  std::string error;
+  if (!engine.prepare(config_, &error)) {
+    log().write(LogLevel::error, error);
+    return static_cast<int>(ExitCode::runtime_error);
   }
 
+  // The engine owns both threads and paces itself by the device, so nothing here
+  // has to drive it: this thread waits for a signal and then asks it to stop.
+  // Run on a thread of its own so that a stop request is answered promptly
+  // rather than after the current read or receive returns.
+  int result = 0;
+  std::thread running([&engine, &result] { result = engine.run(); });
+  while (!stop_requested.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
   log().write(LogLevel::info, "stopping");
-  return static_cast<int>(ExitCode::ok);
+  engine.stop();
+  running.join();
+
+  return result == 0 ? static_cast<int>(ExitCode::ok)
+                     : static_cast<int>(ExitCode::runtime_error);
 }
 
 }  // namespace aes67_srt

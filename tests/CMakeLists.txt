@@ -1,6 +1,7 @@
 # Unit tests.  They run on any platform: nothing here touches ALSA, libsrt or a
 # real daemon, and the modules that will are compiled in behind AUTO options.
 add_executable(aes67-srt-tests
+  test_app.cpp
   test_audio.cpp
   test_clock_drift.cpp
   test_config.cpp

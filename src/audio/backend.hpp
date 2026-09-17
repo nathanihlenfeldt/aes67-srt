@@ -49,6 +49,18 @@ struct AudioFormat {
  * Implementations are driven from one thread at a time. `read()` returns exactly
  * the frames asked for, padding with silence on underrun, so a caller never has
  * to reason about a short read mid-period.
+ *
+ * **A backend paces its caller, and that is part of the contract.** One period's
+ * worth of wall time passes between successive reads and successive writes: the
+ * engine is paced by the device, not by a timer of its own (there must be as few
+ * timebases as possible — ADR 0001), so a device that returned immediately would
+ * have the engine free-running at whatever rate the CPU allowed. `NullBackend`
+ * implements this by waiting; a real device does it by blocking.
+ *
+ * **`read()` and `write()` may be called concurrently**, one thread each, because
+ * the engine runs a direction per thread. Everything else — `open()`, `close()`,
+ * and the counters — is the control path, and is not called concurrently with
+ * them. A backend whose two directions share state must make that safe.
  */
 class AudioBackend {
  public:
