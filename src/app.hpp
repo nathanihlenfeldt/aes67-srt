@@ -4,11 +4,9 @@
 
 #include "commissioning.hpp"
 #include "config.hpp"
+#include "exit_code.hpp"
 
 namespace aes67_srt {
-
-/** Exit codes, so systemd and the check script can tell failures apart. */
-enum class ExitCode { ok = 0, usage = 2, config_error = 3, runtime_error = 4 };
 
 /**
  * The supervisor.

@@ -428,32 +428,39 @@ nlohmann::json ApiServer::build_preflight() {
       engine_ != nullptr ? engine_->status() : EngineStatus{};
   const Config config = config_snapshot();
 
-  daemon::PtpStatus ptp;
-  std::string daemon_error;
-  bool daemon_ok = false;
-  if (daemon_ != nullptr) {
-    std::lock_guard<std::mutex> lock(daemon_mutex_);
-    daemon_ok = daemon_->get_ptp_status(&ptp, &daemon_error);
-  } else {
-    daemon_error = "no daemon client";
-  }
-
-  const bool ptp_locked = daemon_ok && ptp.status == "locked";
   const bool device_open = engine_ != nullptr && engine_->backend() != nullptr &&
                            engine_->backend()->is_open();
   const bool link_open = status.link_open;
 
   nlohmann::json checks = nlohmann::json::array();
-  // PTP first: an unlocked slave is the failure that looks like success.
-  checks.push_back(
-      {{"name", "ptp"},
-       {"ok", ptp_locked},
-       {"detail", !daemon_ok ? std::string("unknown: the daemon is unreachable")
-                             : (ptp_locked ? std::string("locked")
-                                           : "not locked: " + ptp.status)}});
-  checks.push_back({{"name", "daemon"},
-                    {"ok", daemon_ok},
-                    {"detail", daemon_ok ? daemon_->endpoint() : daemon_error}});
+  bool ok = device_open && link_open;
+
+  // The daemon and PTP checks belong to the appliance. The macOS endpoint carries
+  // no AES67, no PTP and no daemon (ADR 0004), so with no daemon client they are
+  // *absent* rather than reported as failures a site could not fix. On the
+  // appliance they lead, because an unlocked slave is the failure that looks like
+  // success.
+  if (daemon_ != nullptr) {
+    daemon::PtpStatus ptp;
+    std::string daemon_error;
+    bool daemon_ok = false;
+    {
+      std::lock_guard<std::mutex> lock(daemon_mutex_);
+      daemon_ok = daemon_->get_ptp_status(&ptp, &daemon_error);
+    }
+    const bool ptp_locked = daemon_ok && ptp.status == "locked";
+    ok = ok && daemon_ok && ptp_locked;
+    checks.push_back(
+        {{"name", "ptp"},
+         {"ok", ptp_locked},
+         {"detail", !daemon_ok ? std::string("unknown: the daemon is unreachable")
+                               : (ptp_locked ? std::string("locked")
+                                             : "not locked: " + ptp.status)}});
+    checks.push_back({{"name", "daemon"},
+                      {"ok", daemon_ok},
+                      {"detail", daemon_ok ? daemon_->endpoint() : daemon_error}});
+  }
+
   checks.push_back({{"name", "device"},
                     {"ok", device_open},
                     {"detail", engine_ != nullptr && engine_->backend() != nullptr
@@ -464,7 +471,6 @@ nlohmann::json ApiServer::build_preflight() {
                     {"detail", link_open ? config.link.mode + " " + config.link.role
                                          : std::string("not open")}});
 
-  const bool ok = ptp_locked && daemon_ok && device_open && link_open;
   return {{"ok", ok}, {"delay_ms", status.delay_ms}, {"checks", checks}};
 }
 

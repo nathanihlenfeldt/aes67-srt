@@ -285,6 +285,15 @@ add_executable(aes67-srt src/main.cpp)
 target_compile_options(aes67-srt PRIVATE -Wall -Wextra -Wno-unused-parameter)
 target_link_libraries(aes67-srt PRIVATE aes67-srt-core)
 
+# The second product (issue #19): the same core, a CoreAudio device instead of an
+# AES67 one, and none of the appliance's plumbing. macOS only, by the roadmap's
+# own non-goal -- elsewhere this product does not exist.
+if(APPLE)
+  add_executable(aes67-srt-mac src/mac/main.cpp)
+  target_compile_options(aes67-srt-mac PRIVATE -Wall -Wextra -Wno-unused-parameter)
+  target_link_libraries(aes67-srt-mac PRIVATE aes67-srt-core)
+endif()
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------

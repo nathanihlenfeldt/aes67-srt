@@ -363,6 +363,33 @@ TEST_CASE(http_the_aes67_panel_reads_the_daemon_and_wires_sinks) {
   server.stop();
 }
 
+TEST_CASE(http_preflight_drops_the_daemon_checks_when_there_is_no_daemon) {
+  // The macOS endpoint carries no AES67, no PTP and no daemon (ADR 0004), so with
+  // no daemon client its preflight must report the device and the link only --
+  // not failures a site here could never fix.
+  Config config = http_config(18217, "loopback");
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+  CHECK(engine.open(&error));
+
+  ApiServer server(&config, &engine, nullptr, "/nonexistent-webui", "");
+  CHECK(server.start(&error));
+  httplib::Client client("127.0.0.1", config.http_port);
+  httplib::Result response = get_retrying(&client, "/api/status");
+  CHECK(response);
+  const nlohmann::json body = nlohmann::json::parse(response->body);
+  const nlohmann::json& preflight = body["preflight"];
+  CHECK_EQ(preflight["checks"].size(), static_cast<size_t>(2));
+  CHECK_EQ(preflight["checks"][0]["name"].get<std::string>(),
+           std::string("device"));
+  CHECK_EQ(preflight["checks"][1]["name"].get<std::string>(), std::string("link"));
+  CHECK_EQ(preflight["ok"].get<bool>(), true);
+
+  server.stop();
+  engine.stop();
+}
+
 TEST_CASE(http_version_and_log_endpoints_answer) {
   Config config = http_config(18213, "loopback");
   Engine engine;
