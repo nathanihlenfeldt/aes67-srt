@@ -1,7 +1,9 @@
 # aes67-daemon at 64 channels, verified on a Pi 5
 
 Status: **researched** 2026-09-16 on `rpi5-nathan` (Raspberry Pi 5 Model B Rev 1.1, kernel 6.18.34),
-for ticket 03 (issue #4). Every claim here comes from a running daemon and from the ALSA device it
+for ticket 03 (issue #4), and **extended 2026-09-17** by a second session that ran our own binary
+against the daemon instead of measuring it from outside with `curl`. Every claim here comes from a
+running daemon and from the ALSA device it
 exposes — measured, not read. The raw report is attached to issue #18.
 
 ## The answer that mattered
@@ -72,31 +74,67 @@ invalidate the clock work.
 convention is to write the sender's SDP from the receiver's perspective. Worth knowing before
 somebody "fixes" it.
 
+## Second session, 2026-09-17: our own binary in the path
+
+The first session measured the daemon from outside. This one ran the appliance against it —
+`bash scripts/measure-hardware.sh --commission-loopback` on the same Pi — and the report is attached to
+issue #18. What it changed:
+
+**Our source document is refused, and the daemon names the field:**
+
+```
+error commissioning: cannot publish source 0 (block 0):
+  AES67 daemon returned HTTP 400: error parsing JSON: No such node (ttl)
+```
+
+That answers the question this document called "the first thing to measure on the Pi" — and the answer
+is **neither** of the two it offered. The daemon does not default `ttl` and does not zero it: **it
+rejects the document.** So the four fields `aes67-sip` sends from its own configuration (`ttl`, `dscp`,
+`payload_type`, `refclk_ptp_traceable`) are required rather than optional, and the reasoning here that
+omitting them was safer than inventing a site's multicast policy was **wrong in outcome**: omitting
+gets a 400 naming a field, and carries no audio either way. The lesson is in the shape of the mistake —
+"inventing a policy" and "omitting a required field" are not the two options; reading the daemon's own
+schema was.
+
+**`streamer_enabled: false` did not block the PUT.** The daemon parsed far enough to complain about the
+document, so that setting is not what refused us. Whether it blocks *streaming* from a source we hand
+it is still open.
+
+**The device streams, and our backend drives it.** Ten seconds of
+`arecord -f S24_3LE -r 48000 -c 64 -d 10` completed in ten seconds of wall clock with no overruns —
+which closes the "did not verify continuity" gap below. And **our own binary opened the device and
+reported `capture RUNNING, playback RUNNING`**: both substreams triggered, which is what
+`RavennaBackend::start_stream()` exists to produce and which nothing had confirmed on hardware until
+now.
+
+**PTP is locked**, jitter 329 this time against 9 in the first session. Whether that is load or the
+moment is unknown; it is a number to watch rather than a finding.
+
+**Versions:** `aes67-daemon bondagit-4.0.1`, driver `ravenna-alsa-lkm/d4f77d4` (from `dkms status` —
+the script's own `git rev-parse` was refused as root-owned and now overrides it one-shot rather than
+editing git's config, which this script promises not to do).
+
+**The SDPs are now copied exactly.** The real announcements carry payload type **96**, not 98, plus
+`i=Channels 1-8` and a repeated session id in `o=`; the fake had 98 and the sibling's shape. It mirrors
+the captured sender field for field now.
+
 ## Unresolved
 
-- **The 64-channel mapping** — which AES67 stream carries which device channels — cannot be read from
-  a running instance with no sinks or sources configured. It is the first task of ticket 09, where a
-  sink is created for real; doing it as research first would duplicate that work.
-- **The fake daemon's required surface for CI** — **done**, ticket 09 (`src/aes67/fake_daemon_client.*`).
-  Written from the API list above, and its answers are this report's: the config table, the locked
-  grandmaster, and the two senders below with the SDPs they announce. The one thing CI cannot check
-  until the Pi session is that the *real* daemon accepts the sink and source documents we build.
-- **Which fields a source document must carry** is the one thing the sibling could not lend us.
-  `aes67-sip` sets `ttl`, `dscp`, `payload_type` and `refclk_ptp_traceable` from its own
-  configuration; this appliance has no such settings and therefore sends none of them, on the
-  reasoning that inventing a site's multicast policy is worse than omitting a field. **Whether the
-  daemon defaults them or zeroes them is the first thing to measure on the Pi**, because a zeroed
-  `payload_type` would produce silence with nothing reporting it. Ticket 09, the real-daemon half.
-- **`streamer_enabled: false` may block a source we publish.** Provisioning sets it false, with the
-  reason recorded in that script: it "would capture the RAVENNA device". The commissioning loopback
-  now publishes one source per block over REST and subscribes a sink to it, and **whether the daemon
-  needs `streamer_enabled` true for a source it was handed is not known**. It is the first thing the
-  loopback will tell us on the Pi, because the log reports how many sinks are receiving RTP: a zero
-  there with the daemon otherwise healthy points at exactly this and nothing else.
-- **Whether 64 channels actually *stream*** — this opened the device and started recording. It did
-  not verify continuity, underruns or that 64 channels of AES67 arrive. Tickets 09 and 10.
-- **The daemon's version** is not in this report. Provisioning cloned `master`; the commit should be
-  recorded, and the measurement script should read it from `/opt/aes67-linux-daemon`.
+- **What the daemon requires of a source document, beyond `ttl`.** `ttl` is the first field it named
+  and there may be more behind it. **The authority is the daemon's own source on the Pi**
+  (`/opt/aes67-linux-daemon`, bondagit-4.0.1): read the parser rather than discovering one field per
+  round trip, which is what the omission above cost.
+- **The 64-channel mapping** — which AES67 stream carries which device channels — is what our documents
+  *declare* in `map`, and the daemon has not yet accepted a single one of ours. It stays open until a
+  commissioning run gets past the document.
+- **`streamer_enabled: false`** did not refuse the PUT, but whether a source handed to the daemon
+  actually *streams* with it false is unmeasured. The next commissioning run answers it: a zero in
+  "sinks receiving" with the document accepted points at this and nothing else.
+- **Whether 64 channels of AES67 arrive.** The device streams; that audio arrives *from the network* is
+  untested until a sink is subscribed for real. Tickets 09 and 10.
+- **The fake daemon's required surface for CI** — **done**, ticket 09
+  (`src/aes67/fake_daemon_client.*`), and now including the SDP shape above. What CI cannot check is
+  whether the *real* daemon accepts what we build, which is the item at the top of this list.
 
 ## What this changes
 

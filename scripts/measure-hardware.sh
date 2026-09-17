@@ -218,10 +218,16 @@ if have aes67-daemon; then
   try "aes67-daemon --version" aes67-daemon --version
 fi
 if [ -d /opt/aes67-linux-daemon/.git ]; then
-  try "daemon source commit" git -C /opt/aes67-linux-daemon rev-parse --short HEAD
+  # `-c safe.directory` rather than `git config --global`: these repositories are
+  # root-owned, so git refuses them as "dubious ownership", and this script
+  # promises to change no configuration on the machine. A one-shot override says
+  # what it needs without leaving anything behind.
+  try "daemon source commit" \
+    git -c safe.directory='*' -C /opt/aes67-linux-daemon rev-parse --short HEAD
 fi
 if [ -d /usr/src/ravenna-alsa-lkm/.git ]; then
-  try "RAVENNA driver commit" git -C /usr/src/ravenna-alsa-lkm rev-parse --short HEAD
+  try "RAVENNA driver commit" \
+    git -c safe.directory='*' -C /usr/src/ravenna-alsa-lkm rev-parse --short HEAD
 fi
 if have dkms; then
   try "dkms status" dkms status

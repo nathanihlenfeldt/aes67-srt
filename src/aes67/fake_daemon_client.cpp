@@ -21,34 +21,36 @@ constexpr const char* k_rtp_mcast_base = "239.1.0.1";
 constexpr int k_rtp_port = 5004;
 
 /**
- * One AES67 sender's SDP.
+ * One AES67 sender's SDP, field for field what the measured network announces.
  *
- * Written the way AES67 writes it, including `a=recvonly` on a *sender*.  That
- * looks like a mistake and is not: AES67's convention is to express the sender's
- * SDP from the receiver's point of view, so the announcements on the measured
- * network declare it and anything that "fixed" it would be wrong.
+ * Copied from the real `AES67-TX-1` announcement captured on 2026-09-17, including
+ * the parts that look redundant: `o=-` repeats the session id, `i=Channels 1-N`
+ * says what the `m=` line's channel count means, and **the payload type is 96, not
+ * 98** — which the sibling's fixture uses, and which this fake used until a real
+ * capture showed otherwise.
  *
- * The payload type number is copied, not interpreted.  This project never parses
- * SDP — the daemon does, and a sink hands it the document verbatim — so the
- * number only has to be present and consistent with the `rtpmap` beside it.
+ * `a=recvonly` on a *sender* looks like a mistake and is not: AES67's convention is
+ * to express the sender's SDP from the receiver's point of view.
+ *
+ * This project never parses SDP — the daemon does, and a sink hands it the document
+ * verbatim — so the payload type number is copied rather than interpreted.
  */
-std::string sdp_for(const std::string& name, const std::string& multicast,
-                    int channels, unsigned ssrc, const std::string& codec) {
+std::string sdp_for(const std::string& name, const std::string& address,
+                    const std::string& multicast, int channels, unsigned ssrc,
+                    const std::string& codec) {
   std::ostringstream out;
   out << "v=0\r\n"
-      << "o=- " << ssrc << " 0 IN IP4 127.0.0.1\r\n"
+      << "o=- " << ssrc << " " << ssrc << " IN IP4 " << address << "\r\n"
       << "s=" << name << "\r\n"
       << "c=IN IP4 " << multicast << "/32\r\n"
       << "t=0 0\r\n"
-      << "a=clock-domain:PTPv2 0\r\n"
-      << "m=audio " << k_rtp_port << " RTP/AVP 98\r\n"
-      << "a=rtpmap:98 " << codec << "/48000/" << channels << "\r\n"
-      << "a=sync-time:0\r\n"
-      << "a=framecount:48\r\n"
+      << "m=audio " << k_rtp_port << " RTP/AVP 96\r\n"
+      << "i=Channels 1-" << channels << "\r\n"
+      << "a=recvonly\r\n"
+      << "a=rtpmap:96 " << codec << "/48000/" << channels << "\r\n"
       << "a=ptime:1\r\n"
-      << "a=mediaclk:direct=0\r\n"
       << "a=ts-refclk:ptp=IEEE1588-2008:" << k_gmid << ":0\r\n"
-      << "a=recvonly\r\n";
+      << "a=mediaclk:direct=0\r\n";
   return out.str();
 }
 
@@ -241,7 +243,7 @@ std::string FakeDaemonClient::source_sdp(int id, const json& document) const {
     channels = static_cast<int>(document["map"].size());
   }
   const unsigned ssrc = 0x50000000u + static_cast<unsigned>(id);
-  return sdp_for(name, next_multicast(id), channels, ssrc, codec);
+  return sdp_for(name, config_.address, next_multicast(id), channels, ssrc, codec);
 }
 
 bool FakeDaemonClient::browse_sources(const std::string& kind, json* sources,
@@ -268,7 +270,8 @@ bool FakeDaemonClient::browse_sources(const std::string& kind, json* sources,
         {"name", "AES67-TX-1"},
         {"domain", ""},
         {"address", "10.10.80.20"},
-        {"sdp", sdp_for("AES67-TX-1", "233.254.57.0", 8, 0x1000u, "L24")},
+        {"sdp",
+         sdp_for("AES67-TX-1", "10.10.80.20", "233.254.57.0", 8, 0x1000u, "L24")},
         {"last_seen", 3},
         {"announce_period", 30},
     });
@@ -278,7 +281,8 @@ bool FakeDaemonClient::browse_sources(const std::string& kind, json* sources,
         {"name", "AES67-TX-2-qsys"},
         {"domain", ""},
         {"address", "10.10.80.20"},
-        {"sdp", sdp_for("AES67-TX-2-qsys", "239.1.0.99", 1, 0x1001u, "L24")},
+        {"sdp", sdp_for("AES67-TX-2-qsys", "10.10.80.20", "239.1.0.99", 1, 0x1001u,
+                        "L24")},
         {"last_seen", 4},
         {"announce_period", 30},
     });

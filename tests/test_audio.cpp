@@ -210,23 +210,44 @@ TEST_CASE(audio_with_alsa_the_factory_hands_back_the_ravenna_backend) {
       create_audio_backend(config);
   CHECK_EQ(backend->kind(), std::string("ravenna"));
 
-  // No CI runner has the RAVENNA kernel module, so opening the device must fail
-  // — and fail naming the device, because that message is what a commissioning
-  // engineer reads on a machine that is missing the module rather than broken.
   std::string error;
   const AudioFormat format;
-  CHECK(!backend->open(format, &error));
-  CHECK(contains(error, config.device));
-  CHECK(!backend->is_open());
-  CHECK_EQ(backend->overruns(), 0u);
 
-  // A device that could not be opened refuses politely rather than crashing:
-  // this is the state the audio thread sits in while somebody fixes it.
+  // Two machines, two correct answers, and this test used to insist on one of
+  // them. On a CI runner there is no RAVENNA card, so opening must fail and the
+  // refusal must name the device — that message is what a commissioning engineer
+  // reads on a machine missing its module. **On the appliance the device is
+  // there and opening must succeed.** The first version of this test required
+  // the failure, so it passed on CI and failed on the Pi: it asserted a property
+  // of the build machine rather than a property of the product.
   std::vector<uint8_t> period(format.period_bytes(), 0);
-  CHECK(!backend->read(period.data(), format.period_frames, &error));
-  CHECK(!error.empty());
-  CHECK(!backend->write(period.data(), format.period_frames, &error));
-  CHECK(!error.empty());
+  if (backend->open(format, &error)) {
+    CHECK(backend->is_open());
+    CHECK(contains(backend->detail(), config.device));
+
+    // And the substreams are *triggered*, which is the difference between a
+    // device that opened and a device that moves audio. A RAVENNA substream left
+    // PREPARED never produces or consumes a single frame, with no error anywhere
+    // — the silent failure `start_stream()` exists to prevent. The Pi reported
+    // exactly this on 2026-09-17: "capture RUNNING, playback RUNNING".
+    CHECK(contains(backend->detail(), "RUNNING"));
+    CHECK_EQ(backend->overruns(), 0u);
+    CHECK_EQ(backend->underruns(), 0u);
+
+    backend->close();
+  } else {
+    CHECK(!error.empty());
+    CHECK(contains(error, config.device));
+    CHECK(!backend->is_open());
+    CHECK_EQ(backend->overruns(), 0u);
+
+    // A device that could not be opened refuses politely rather than crashing:
+    // this is the state the audio thread sits in while somebody fixes it.
+    CHECK(!backend->read(period.data(), format.period_frames, &error));
+    CHECK(!error.empty());
+    CHECK(!backend->write(period.data(), format.period_frames, &error));
+    CHECK(!error.empty());
+  }
 
   backend->close();
   CHECK(!backend->is_open());

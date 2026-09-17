@@ -229,10 +229,17 @@ TEST_CASE(daemon_a_block_maps_its_eight_device_channels_and_nothing_else) {
   // The name comes from the index, not from the channels: an operator who
   // re-maps which device channels a block carries must not thereby rename the
   // stream the far end has already subscribed to.
+  //
+  // Bound to *values*, not to references: `make_block_source` returns a
+  // temporary and `.at()` refers into it, so the macro's `const auto&` would
+  // dangle past the end of the full expression. GCC 14 said so
+  // (-Wdangling-reference) on the Pi, and it was right — the first version of
+  // this comparison read freed memory and happened to work.
   BlockConfig remapped = config.blocks[2];
   std::swap(remapped.channels[0], remapped.channels[1]);
-  CHECK_EQ(make_block_source(config, remapped).at("name"),
-           make_block_source(config, config.blocks[2]).at("name"));
+  const json remapped_name = make_block_source(config, remapped).at("name");
+  const json original_name = make_block_source(config, config.blocks[2]).at("name");
+  CHECK_EQ(remapped_name, original_name);
 
   CHECK_EQ(block_stream_name(0), std::string("aes67-srt block 0"));
   CHECK_EQ(block_stream_name(7), std::string("aes67-srt block 7"));
