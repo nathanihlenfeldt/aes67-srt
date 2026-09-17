@@ -546,7 +546,13 @@ elif [ "${COMMISSION_LOOPBACK}" != "true" ]; then
   note "It will publish one source per block and subscribe one sink per block."
 else
   printf '\n--- the configuration, before anything is wired\n'
-  try "validate" ./build/aes67-srt -c config/aes67-srt.conf --validate
+  # A commissioning configuration rather than the production one: the daemon and the
+  # RAVENNA device are real, because the AES67 half is what is being tested, but the
+  # *link* is a loopback. The production config points at a WAN peer, so with no peer
+  # present the appliance would fail to open the link seconds after commissioning had
+  # already succeeded — and a non-zero exit there reads as a commissioning failure
+  # when it is nothing of the kind. The AES67 wiring does not involve the link at all.
+  try "validate" ./build/aes67-srt -c config/aes67-srt.commissioning.conf --validate
 
   # The settings that decide whether any of this can work. `streamer_enabled` is
   # the one nobody has measured: provisioning sets it false because it would
@@ -565,7 +571,7 @@ else
 
   printf '\n--- our binary, commissioning for 15 seconds\n'
   appliance_log="$(mktemp)"
-  ./build/aes67-srt -c config/aes67-srt.conf --commission-loopback \
+  ./build/aes67-srt -c config/aes67-srt.commissioning.conf --commission-loopback \
     >"${appliance_log}" 2>&1 &
   appliance=$!
   sleep 15

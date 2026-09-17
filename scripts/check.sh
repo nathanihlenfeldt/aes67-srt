@@ -63,6 +63,10 @@ echo "==> tests, directly, for the summary and any skips"
 echo "==> config validation accepts the sample configurations"
 "${BUILD_DIR}/aes67-srt" -c config/aes67-srt.conf --validate
 "${BUILD_DIR}/aes67-srt" -c config/aes67-srt.dev.conf --validate
+# The commissioning configuration: a real daemon and a real device, with the link
+# looped. It is what the hardware session's §9 runs, so it is validated here rather
+# than discovered to be broken on a Pi.
+"${BUILD_DIR}/aes67-srt" -c config/aes67-srt.commissioning.conf --validate
 
 echo "==> config validation refuses an impossible configuration"
 BAD_CONFIG="$(mktemp)"

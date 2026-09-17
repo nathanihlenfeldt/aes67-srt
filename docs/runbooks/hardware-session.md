@@ -41,11 +41,14 @@ which is two REST documents per block. Everything else is read-only.
 1. **§4's ten-second capture.** The earlier session proved the device *opens* at 64 channels; it did
    not prove it streams. Watch for overruns and for the wall clock against the audio duration.
 2. **§9, the commissioning loopback.** This is issue #9's hardware criterion and it has never run
-   against the real daemon. What answers it is the counting line — *"N sources published, N sinks
-   subscribed, **N receiving**"* — and the per-sink flags after it, because which block is silent is
-   the whole question. **If everything is green except "receiving", check `streamer_enabled` in §9's
-   settings list**: provisioning sets it false, and whether a source handed over REST needs it true
-   is the open question this run answers.
+   against the real daemon. It runs the appliance with `config/aes67-srt.commissioning.conf` — the
+   production daemon and device, but a **loopback link**, because the AES67 wiring does not involve the
+   link and a config pointing at a WAN peer would fail to open seconds after commissioning succeeded.
+   What answers the criterion is the counting line — *"N sources published, N sinks subscribed,
+   **N receiving**"* — and the per-sink flags after it, because which block is silent is the whole
+   question. **If everything is green except "receiving", check `streamer_enabled` in §9's settings
+   list**: provisioning sets it false, and whether a source handed over REST needs it true is the open
+   question this run answers.
 3. **§5's PTP state.** Locked or not is the difference between audio and no audio, and it is the
    commonest reason a healthy-looking appliance is silent.
 

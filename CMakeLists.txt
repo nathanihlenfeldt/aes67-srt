@@ -242,6 +242,8 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/config/aes67-srt.conf
         RENAME aes67-srt.conf.sample)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/config/aes67-srt.dev.conf
         DESTINATION ${CMAKE_INSTALL_DATADIR}/aes67-srt)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/config/aes67-srt.commissioning.conf
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/aes67-srt)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/systemd/aes67-srt.service
         DESTINATION ${CMAKE_INSTALL_DATADIR}/aes67-srt
         OPTIONAL)
