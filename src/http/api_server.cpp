@@ -279,8 +279,11 @@ void ApiServer::register_routes() {
                response.set_content(k_fallback_page, "text/html");
              });
     log().write(LogLevel::info,
-                "control: no web UI built (" + webui_dir_ +
-                    " is absent); serving the built-in status page");
+                webui_dir_.empty()
+                    ? std::string("control: no web UI directory configured; "
+                                  "serving the built-in status page")
+                    : "control: no web UI at '" + webui_dir_ +
+                          "'; serving the built-in status page");
   }
 
   svr->set_error_handler([](const httplib::Request&, httplib::Response& response) {

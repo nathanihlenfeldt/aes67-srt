@@ -9,6 +9,7 @@
 #include "aes67/daemon_client.hpp"
 #include "commissioning.hpp"
 #include "engine.hpp"
+#include "http/api_server.hpp"
 #include "log.hpp"
 #include "version.hpp"
 
@@ -84,17 +85,17 @@ void App::describe() const {
                 "fake mode: null audio backend, fake daemon, loopback transport");
   }
 
-  // What the path now does, module by module, and what is still missing: the clock
-  // holds the playout delay and resamples at the ratio it decides, the delay line
-  // adds the A/V offset on the way out, and the control surface that would show and
-  // steer any of it is still to come. A build that carries audio should say where
-  // it stops, for the same reason the old line said what it did not carry at all.
+  // What the path now does, module by module: the clock holds the playout delay
+  // and resamples at the ratio it decides, the delay line adds the A/V offset and
+  // the test signal, and the control surface serves the status page the operator
+  // reads. A build that carries audio should say where it stops, and it no longer
+  // stops anywhere before the device.
   log().write(
       LogLevel::info,
       "audio path: device -> blocks -> frame -> link -> clock -> delay -> device, "
       "the clock holding the playout delay and resampling at the ratio it decides, "
-      "the delay line adding the A/V offset and the test signal (ticket 12): no "
-      "control surface yet (tickets 13-14)");
+      "the delay line adding the A/V offset and the test signal (ticket 12); the "
+      "control surface serves the status page and the REST API (ticket 13)");
 }
 
 void App::request_stop() {
@@ -148,6 +149,16 @@ int App::run() {
     return static_cast<int>(ExitCode::runtime_error);
   }
 
+  // The control surface (ticket 13), on its own thread for as long as the engine
+  // runs. A port that will not bind is a warning rather than a failure: audio is
+  // the point, and a second instance's collision should not take down a working
+  // link just because it cannot also have the status page.
+  ApiServer control(&config_, &engine, daemon.get(), std::string());
+  if (!control.start(&error)) {
+    log().write(LogLevel::warn,
+                error + " (continuing without the control surface)");
+  }
+
   // The engine owns both threads and paces itself by the device, so nothing here
   // has to drive it: this thread waits for a signal and then asks it to stop.
   // Run on a thread of its own so that a stop request is answered promptly
@@ -160,6 +171,7 @@ int App::run() {
   log().write(LogLevel::info, "stopping");
   engine.stop();
   running.join();
+  control.stop();
 
   return result == 0 ? static_cast<int>(ExitCode::ok)
                      : static_cast<int>(ExitCode::runtime_error);

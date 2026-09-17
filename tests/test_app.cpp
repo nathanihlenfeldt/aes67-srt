@@ -4,6 +4,9 @@
 #include <string>
 #include <thread>
 
+#include <httplib.h>
+#include <nlohmann/json.hpp>
+
 #include "config.hpp"
 #include "test_framework.hpp"
 
@@ -76,5 +79,43 @@ TEST_CASE(app_runs_the_whole_audio_path_in_fake_mode_and_stops_cleanly) {
   app.request_stop();
   running.join();
 
+  CHECK_EQ(result, static_cast<int>(ExitCode::ok));
+}
+
+TEST_CASE(app_serves_the_control_surface_while_it_runs) {
+  // The appliance serves its own status page on its documented port (ticket 13's
+  // fourth criterion). Fake mode keeps it entirely local: loopback link, null
+  // device, fake daemon, so the whole run touches nothing.
+  Config config = production_config();
+  config.http_addr = "127.0.0.1";
+  config.http_port = 18221;
+
+  App app;
+  app.configure(config);
+  app.set_fake(true);
+
+  int result = -1;
+  std::thread running([&app, &result] { result = app.run(); });
+
+  httplib::Client client("127.0.0.1", config.http_port);
+  httplib::Result response(nullptr, httplib::Error::Connection);
+  for (int attempt = 0; attempt < 40; ++attempt) {
+    response = client.Get("/api/status");
+    if (response && response->status == 200) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  CHECK(response);
+  CHECK_EQ(response->status, 200);
+  if (response && response->status == 200) {
+    const nlohmann::json body = nlohmann::json::parse(response->body);
+    CHECK(body.contains("preflight"));
+    CHECK(body.contains("engine"));
+    CHECK_EQ(body["name"].get<std::string>(), std::string("aes67-srt"));
+  }
+
+  app.request_stop();
+  running.join();
   CHECK_EQ(result, static_cast<int>(ExitCode::ok));
 }

@@ -13,13 +13,12 @@ enum class ExitCode { ok = 0, usage = 2, config_error = 3, runtime_error = 4 };
 /**
  * The supervisor.
  *
- * Owns the configuration, the run/stop lifecycle, and — since the engine landed —
- * the audio path itself: it builds the device and the link, runs the two
- * directions, and stops them when the process is asked to.
+ * Owns the configuration, the run/stop lifecycle, and the whole audio path: it
+ * builds the device and the link, runs the two directions with the clock and the
+ * A/V delay line in the receive path, and serves the control surface's status page
+ * while it runs.
  *
- * What it does *not* own yet: the clock and delay stages, which are later
- * tickets, and the control surface. So audio passes through unaltered, and the
- * only way to see or steer it is the log.
+ * The log is still one way to see it. It is no longer the only one.
  */
 class App {
  public:
