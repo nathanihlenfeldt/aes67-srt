@@ -479,18 +479,24 @@ TEST_CASE(engine_says_once_that_a_loopback_has_no_link_statistics) {
 
   int result = -1;
   std::thread running([&engine, &result] { result = engine.run(); });
-  // Past one status interval, so the thread has had exactly one chance to speak.
-  std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+  // Poll rather than sleep a fixed interval: a loaded CI runner can push the
+  // status thread's first turn past any constant, and a test that fails for being
+  // scheduled late teaches nothing. The marker is the loopback reason, which is
+  // unique to this path.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+  bool found = false;
+  while (!found && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    for (const std::string& line : aes67_srt::log().tail(200)) {
+      if (line.find("link statistics:") != std::string::npos &&
+          line.find("loopback") != std::string::npos) {
+        found = true;
+      }
+    }
+  }
   engine.stop();
   running.join();
 
   CHECK_EQ(result, 0);
-  bool found = false;
-  for (const std::string& line : aes67_srt::log().tail(200)) {
-    if (line.find("link statistics:") != std::string::npos &&
-        line.find("loopback") != std::string::npos) {
-      found = true;
-    }
-  }
   CHECK(found);
 }
