@@ -110,3 +110,53 @@ the best of three runs.
 - **Where the drift budget sits relative to the 120 ms latency**: whether corrections happen
   continuously or inside a bounded window, and what happens to the figure the operator is shown
   while they do.
+
+## How the ratio is obtained, and why the first answer was wrong
+
+ADR 0003 decides *what* to do — continuous resampling — and leaves *how* to the module. The first
+draft of that "how" was a rate estimator: fit the wire's sample position against each frame's local
+arrival time, take the slope, and resample by it. Writing it out exposed two problems, and the second
+is the one that matters.
+
+**1. Do not filter with the thing you are measuring.** The sample position advances by exactly 48 for
+every frame because frames are sent once per millisecond of the *sender's* clock. The sender's ppm
+offset is therefore invisible in the position alone: it appears only when the position is set against
+**our** clock. That is fine, and it is the whole trick — but it means the instrument's noise is the
+**arrival jitter**, not the sample position.
+
+**2. How much jitter can be tolerated is a hard arithmetic bound.** A least-squares slope over a
+window of span `T` seconds with `n` points and arrival jitter `sigma` has an error of about
+`sigma * sqrt(12/n) / T`. Frames arrive every millisecond, so `n = 1000*T` and the error is about
+`1.1e-4 * sigma / T^1.5` with `sigma` in seconds:
+
+| Arrival jitter | Window for a 10 ppm estimate | Window for 1 ppm |
+|---|---|---|
+| 1 ms | ~5 s | ~23 s |
+| 5 ms | ~11 s | ~51 s |
+
+So a direct estimate is **workable but not free**: it needs a window of tens of seconds, and what it
+needs exactly is set by `sigma`, which **nobody has measured**. SRT delivers on a TSBPD schedule rather
+than at the mercy of the network, so the true figure may be far below a millisecond — but "may be" is
+not a number, and this project has been burned by exactly that kind of assumption.
+
+**The alternative needs no measurement at all: close the loop on the buffer level.** The playout
+buffer level *is* the integral of the rate error, so steering the ratio to hold the level constant is
+self-correcting and needs no direct estimate. That is the standard shape for an asynchronous playout
+path, and it is robust to any jitter because it does not measure time at all — it measures how full
+the buffer is.
+
+**What this changes about the build order, not the design.** Neither instrument exists yet, and both
+need the same thing underneath them: the playout buffer, its level, and the sample-position alignment
+that `wire` already guarantees by construction. So the increments became:
+
+1. the **playout buffer** — holds frames by sample position, never drops audio, reports its level in
+   milliseconds (which is also the delay figure ticket 12 asks for, and the machinery ticket 13's A/V
+   offset is the same thing seen from the other side);
+2. the **ratio control** — buffer-level feedback, with a direct estimate as an optional accelerator
+   once `sigma` is known;
+3. the **resampler** behind that ratio, choosing among libsamplerate's converters by measuring quality
+   against CPU, as ADR 0003 says belongs here.
+
+**And the next hardware session gains a cheap, decisive measurement:** log the spread of frame arrival
+times at the receiver. That single number decides whether the direct estimate is viable as an
+accelerator, and it costs a line of logging rather than a session.
