@@ -742,6 +742,12 @@ bool Engine::open(std::string* error) {
   // not be able to park this loop inside a network call, or the process can never
   // be stopped. See k_send_poll_ms.
   link_->set_send_timeout_ms(k_send_poll_ms);
+  // And a zero timeout is not enough on the receive side: blocking mode still waits
+  // for a delivered frame, so a peer that is connected but silent — or one that has
+  // gone — parks `srt_recvmsg` for ever and SIGTERM is ignored. Non-blocking mode
+  // is what makes every receive return. The connection is up by now, so this does
+  // not affect the handshake.
+  link_->set_nonblocking();
 
   // The clock, built per open rather than per process: a link that is reopened is a
   // stream whose sample positions may well start somewhere else, and a buffer still

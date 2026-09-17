@@ -109,6 +109,26 @@ class Link {
    */
   void set_send_timeout_ms(int timeout_ms);
 
+  /**
+   * Put the **receive** side into non-blocking mode (`SRTO_RCVSYN = false`), for
+   * the engine's device-paced loops.
+   *
+   * **This is not the same as a zero timeout, and the difference is a hang.** With
+   * blocking mode and `SRTO_RCVTIMEO = 0`, libsrt still waits for a delivered
+   * frame, so a peer that is connected but silent — or one that has gone away —
+   * leaves `srt_recvmsg` parked, the receive loop never checks the stop flag, and
+   * the process cannot be stopped by SIGTERM (a `systemctl restart` then waits out
+   * `TimeoutStopSec`). In non-blocking mode the call always returns, with
+   * `SRT_EASYNCRCV` when there is nothing.
+   *
+   * Call it after the connection is established: the SYN options also govern
+   * `srt_connect`, which must stay blocking. **The send is deliberately left
+   * blocking** with its zero timeout, because a non-blocking send is refused when
+   * the buffer is momentarily full and a refusal there is a frame dropped, which
+   * decision 6 forbids.
+   */
+  void set_nonblocking();
+
   /** Statistics for the UI. Fails rather than returning plausible zeroes. */
   bool stats(LinkStats* out, std::string* error) const;
 

@@ -173,6 +173,15 @@ void Link::set_send_timeout_ms(int timeout_ms) {
 #endif
 }
 
+void Link::set_nonblocking() {
+#if AES67_SRT_WITH_SRT
+  if (impl_->socket == SRT_INVALID_SOCK) {
+    return;
+  }
+  set_bool(impl_->socket, SRTO_RCVSYN, false);
+#endif
+}
+
 std::string Link::peer_description() const {
   if (!is_open()) {
     return "(down)";
@@ -423,9 +432,10 @@ bool Link::receive_message(std::vector<uint8_t>* buffer, bool* timed_out,
   char chunk[k_receive_buffer_bytes];
   const int received = srt_recvmsg(impl_->socket, chunk, sizeof(chunk));
   if (received == SRT_ERROR) {
-    if (srt_getlasterror(nullptr) == SRT_ETIMEOUT) {
-      // A quiet link is not a broken one, and the caller's loop has to be able to
-      // tell the difference.
+    const int code = srt_getlasterror(nullptr);
+    if (code == SRT_ETIMEOUT || code == SRT_EASYNCRCV) {
+      // A quiet link is not a broken one. ETIMEOUT is the blocking mode's answer
+      // and EASYNCRCV is non-blocking mode's; both mean nothing was waiting.
       if (timed_out != nullptr) {
         *timed_out = true;
       }
