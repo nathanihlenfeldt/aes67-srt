@@ -182,7 +182,7 @@ const char* k_fallback_page = R"HTML(<!doctype html>
     </div>
   </section>
   <section class="card wide">
-    <h2>SRT link</h2>
+    <h2>Configuration</h2>
     <form class="form" id="linkform" onsubmit="return false;">
       <label>Mode<br><select id="c_mode"><option>caller</option><option>listener</option><option>rendezvous</option><option>loopback</option></select></label>
       <label>Role<br><select id="c_role"><option>tx</option><option>rx</option><option>duplex</option></select></label>
@@ -192,10 +192,13 @@ const char* k_fallback_page = R"HTML(<!doctype html>
       <label>Blocks<br><input id="c_blocks" type="number" min="1" max="8"></label>
       <label>Passphrase<br><input id="c_passphrase" type="password"></label>
       <div class="actions">
-        <button id="savelink" type="button">Save SRT settings</button>
+        <button id="savelink" type="button">Save configuration</button>
         <span class="msg" id="configmsg" role="status"></span>
       </div>
     </form>
+    <div class="sub">Blocks, mapping and levels</div>
+    <div id="blocks"></div>
+    <p class="msg">A change to the link, the mapping or a level needs a restart; the A/V delay does not.</p>
   </section>
   <section class="card wide">
     <h2>AES67 daemon</h2>
@@ -289,6 +292,11 @@ async function loadConfig() {
     $('c_peer').value = l.peer || ''; $('c_local_port').value = l.local_port;
     $('c_latency_ms').value = l.latency_ms; $('c_blocks').value = l.blocks;
     $('c_passphrase').value = l.passphrase || '';
+    $('blocks').innerHTML = (currentConfig.blocks || []).map((b, i) =>
+      '<div class="row"><span class="name">block ' + b.index + '</span>' +
+      '<span class="detail">channels ' + (b.channels || []).join(', ') + '</span>' +
+      '<span class="detail"><label>gain dB <input type="number" step="0.1" data-gain="' + i + '" value="' + b.gain_db + '"></label> ' +
+      '<label><input type="checkbox" data-mute="' + i + '"' + (b.mute ? ' checked' : '') + '> mute</label></span></div>').join('');
   } catch (e) { /* the status poll reports an unreachable appliance */ }
 }
 $('savelink').onclick = async () => {
@@ -302,6 +310,12 @@ $('savelink').onclick = async () => {
   currentConfig.link.latency_ms = n('c_latency_ms');
   currentConfig.link.blocks = n('c_blocks');
   currentConfig.link.passphrase = $('c_passphrase').value;
+  (currentConfig.blocks || []).forEach((b, i) => {
+    const gain = document.querySelector('[data-gain="' + i + '"]');
+    const mute = document.querySelector('[data-mute="' + i + '"]');
+    if (gain) b.gain_db = parseFloat(gain.value);
+    if (mute) b.mute = mute.checked;
+  });
   const r = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentConfig) });
   const m = $('configmsg');
   if (!r.ok) { m.className = 'msg bad'; m.textContent = await r.text(); return; }

@@ -1,4 +1,5 @@
 #include "audio/backend.hpp"
+#include "audio/levels.hpp"
 #include "audio/null_backend.hpp"
 
 #include <chrono>
@@ -6,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "audio_bytes.hpp"
 #include "config.hpp"
 #include "test_framework.hpp"
 #include "wire/frame.hpp"
@@ -351,4 +353,105 @@ TEST_CASE(audio_carries_audio_end_to_end_without_hardware) {
   CHECK(played == source);
   CHECK_EQ(remote.overruns(), 0u);
   CHECK_EQ(remote.underruns(), 0u);
+}
+
+// ---- per-block gain and mute (ticket 14, issue #15) ------------------------
+
+namespace {
+
+/** A period whose every sample is its own interleaved index + 1, so a change shows.
+ */
+std::vector<uint8_t> indexed_period(const AudioFormat& format) {
+  std::vector<uint8_t> period(format.period_bytes(), 0);
+  for (size_t sample = 0; sample < format.period_samples(); ++sample) {
+    audio_bytes::put_s24(period.data() + sample * format.sample_bytes,
+                         static_cast<int32_t>(sample + 1));
+  }
+  return period;
+}
+
+}  // namespace
+
+TEST_CASE(audio_a_muted_block_silences_only_its_channels) {
+  AudioFormat format;
+  format.channels = 16;
+  format.period_frames = 4;
+  format.sample_bytes = 3;
+  std::vector<aes67_srt::BlockConfig> blocks(2);
+  blocks[0].channels = {0, 1, 2, 3, 4, 5, 6, 7};
+  blocks[1].channels = {8, 9, 10, 11, 12, 13, 14, 15};
+  blocks[0].mute = true;
+
+  std::vector<uint8_t> period = indexed_period(format);
+  aes67_srt::audio::apply_block_levels(period.data(), format, blocks);
+
+  for (size_t sample = 0; sample < format.period_samples(); ++sample) {
+    const int channel = static_cast<int>(sample % format.channels);
+    const int32_t got = audio_bytes::s24_at(period.data(), sample);
+    if (channel < 8) {
+      CHECK_EQ(got, 0);
+    } else {
+      CHECK_EQ(got, static_cast<int32_t>(sample + 1));
+    }
+  }
+}
+
+TEST_CASE(audio_block_gain_scales_by_the_decibels_and_clips_rather_than_wraps) {
+  AudioFormat format;
+  format.channels = 8;
+  format.period_frames = 2;
+  format.sample_bytes = 3;
+  std::vector<aes67_srt::BlockConfig> blocks(1);
+  blocks[0].channels = {0, 1, 2, 3, 4, 5, 6, 7};
+  blocks[0].gain_db = -6.0206;  // half, to within rounding
+
+  std::vector<uint8_t> period(format.period_bytes(), 0);
+  const int32_t value = 1000000;
+  for (size_t sample = 0; sample < format.period_samples(); ++sample) {
+    audio_bytes::put_s24(period.data() + sample * format.sample_bytes, value);
+  }
+  aes67_srt::audio::apply_block_levels(period.data(), format, blocks);
+  for (size_t sample = 0; sample < format.period_samples(); ++sample) {
+    CHECK_NEAR(audio_bytes::s24_at(period.data(), sample), 500000, 2);
+  }
+
+  // A gain that overshoots clips at the ceiling; it must not wrap to the opposite
+  // sign, which would be a click the size of the signal.
+  blocks[0].gain_db = 40.0;
+  for (size_t sample = 0; sample < format.period_samples(); ++sample) {
+    audio_bytes::put_s24(period.data() + sample * format.sample_bytes, value);
+  }
+  aes67_srt::audio::apply_block_levels(period.data(), format, blocks);
+  for (size_t sample = 0; sample < format.period_samples(); ++sample) {
+    CHECK_EQ(audio_bytes::s24_at(period.data(), sample), 0x7FFFFF);
+  }
+}
+
+TEST_CASE(audio_unity_gain_and_no_mute_leaves_the_period_untouched) {
+  AudioFormat format;
+  format.channels = 8;
+  format.period_frames = 3;
+  format.sample_bytes = 3;
+  std::vector<aes67_srt::BlockConfig> blocks(1);
+  blocks[0].channels = {0, 1, 2, 3, 4, 5, 6, 7};
+  const std::vector<uint8_t> before = indexed_period(format);
+  std::vector<uint8_t> period = before;
+  aes67_srt::audio::apply_block_levels(period.data(), format, blocks);
+  CHECK(period == before);
+}
+
+TEST_CASE(audio_the_levels_work_for_sixteen_bit_samples_too) {
+  AudioFormat format;
+  format.channels = 8;
+  format.period_frames = 2;
+  format.sample_bytes = 2;
+  std::vector<aes67_srt::BlockConfig> blocks(1);
+  blocks[0].channels = {0, 1, 2, 3, 4, 5, 6, 7};
+  blocks[0].mute = true;
+  std::vector<uint8_t> period(format.period_bytes(), 0x7f);
+  aes67_srt::audio::apply_block_levels(period.data(), format, blocks);
+  for (size_t sample = 0; sample < format.period_samples(); ++sample) {
+    CHECK_EQ(period[sample * 2], 0);
+    CHECK_EQ(period[sample * 2 + 1], 0);
+  }
 }

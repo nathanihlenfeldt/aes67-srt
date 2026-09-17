@@ -591,3 +591,60 @@ TEST_CASE(engine_says_once_that_a_loopback_has_no_link_statistics) {
   CHECK_EQ(result, 0);
   CHECK(found);
 }
+
+TEST_CASE(engine_applies_the_block_gain_to_what_it_sends) {
+  // The pure function is tested where it lives; this proves the *engine* calls it
+  // on the transmit path, across a real SRT link, which is the wiring a unit test
+  // cannot see.
+  if (!aes67_srt::transport::Link::available() ||
+      !aes67_srt::clock::Resampler::available()) {
+    std::cout << "  no libsrt or no libsamplerate: skipping the gain link"
+              << std::endl;
+    return;
+  }
+  Config site_config = engine_config(1, "listener", 19711);
+  site_config.blocks[0].gain_db = -6.0206;  // half, to within rounding
+  Config remote_config = engine_config(1, "caller", 19712, "127.0.0.1:19711");
+  Engine site;
+  Engine remote;
+  std::string error;
+  CHECK(site.prepare(site_config, &error));
+  CHECK(remote.prepare(remote_config, &error));
+
+  std::atomic<bool> site_up{false};
+  std::string site_error;
+  std::thread accepting(
+      [&site, &site_up, &site_error] { site_up = site.open(&site_error); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  const bool remote_up = remote.open(&error);
+  accepting.join();
+  CHECK(remote_up);
+  CHECK(site_up.load());
+  if (!remote_up || !site_up.load()) {
+    test::report_failure("the gain link did not come up", __FILE__, __LINE__,
+                         error + " / " + site_error);
+    return;
+  }
+
+  const AudioFormat format = aes67_srt::audio::audio_format_from(site_config.audio);
+  const std::vector<uint8_t> period = audio_bytes::constant_period(format, 1000000);
+  std::vector<uint8_t> played(format.period_bytes(), 0);
+  int halved = 0;
+  const int turns = site_config.link.latency_ms + 200;
+  for (int turn = 0; turn < turns; ++turn) {
+    CHECK(site.backend()->write(period.data(), format.period_frames, &error));
+    CHECK(site.step_transmit(&error));
+    CHECK(remote.step_receive(&error));
+    CHECK(remote.backend()->read(played.data(), format.period_frames, &error));
+    const int32_t value = audio_bytes::s24_at(played.data(), 0);
+    if (value > 480000 && value < 520000) {
+      ++halved;
+    }
+  }
+  // A gain of -6.02 dB is a factor of 0.5, so 1,000,000 arrives as ~500,000 --
+  // which is the whole point: the operator's trim reaches the wire.
+  CHECK(halved > 100);
+
+  site.stop();
+  remote.stop();
+}

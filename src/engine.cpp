@@ -7,6 +7,8 @@
 #include "log.hpp"
 #include "util.hpp"
 
+#include "audio/levels.hpp"
+
 namespace aes67_srt {
 namespace {
 
@@ -309,6 +311,9 @@ bool Engine::step_transmit(std::string* error) {
   if (!backend_->read(tx_period_.data(), format_.period_frames, error)) {
     return false;
   }
+  // The block levels act on the captured audio before it is framed, so what we
+  // send carries the operator's gain and mute.
+  audio::apply_block_levels(tx_period_.data(), format_, config_.blocks);
 
   wire::Frame frame;
   if (!pack_period(tx_period_.data(), sample_position_, &frame, error)) {
@@ -541,6 +546,10 @@ bool Engine::write_period_to_device(std::string* error) {
     }
   }
 
+  // The block levels act on the played audio. Applied *before* the test signal, so
+  // a muted block is silenced while the alignment impulse on its channel still
+  // fires at full scale — the mark is a measurement, not programme.
+  audio::apply_block_levels(rx_period_.data(), format_, config_.blocks);
   test_signal_.mix(rx_period_.data(), format_.period_frames, egress_frames_);
   if (!delay_line_.process(rx_period_.data(), rx_period_.data(),
                            format_.period_frames, error)) {
