@@ -17,6 +17,18 @@ constexpr int k_receive_poll_ms = 2;
 constexpr int k_retry_delay_ms = 10;
 
 /**
+ * How often the link's statistics are logged, and the sleep slice that divides it.
+ *
+ * A second is what the two-ended run needed and could not get: the transport
+ * exposes RTT, loss, retransmits, bandwidth and buffer delay, and nothing printed
+ * them, so a link delivering a fraction of what it offered had no answer *inside
+ * the run*. The slice exists so a stop request is answered promptly rather than
+ * after a whole interval.
+ */
+constexpr int k_status_interval_ms = 1000;
+constexpr int k_status_slice_ms = 100;
+
+/**
  * The most messages one iteration will consume.
  *
  * A frame is eight messages of `k_max_message_bytes`, so this is a couple of
@@ -573,6 +585,33 @@ void Engine::receive_loop() {
   }
 }
 
+void Engine::status_loop() {
+  bool reported_reason = false;
+  while (!stop_requested_.load()) {
+    for (int slice = 0; slice < k_status_interval_ms / k_status_slice_ms &&
+                        !stop_requested_.load();
+         ++slice) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(k_status_slice_ms));
+    }
+    if (stop_requested_.load()) {
+      break;
+    }
+
+    transport::LinkStats stats;
+    std::string error;
+    if (link_->stats(&stats, &error)) {
+      reported_reason = false;
+      log().write(LogLevel::info, "link: " + transport::to_string(stats));
+    } else if (!reported_reason) {
+      // A loopback has no statistics and a link that is not up has none either.
+      // Say why once, then again only after it has worked: a line every second
+      // saying nothing is how a real fault hides in the log.
+      reported_reason = true;
+      log().write(LogLevel::info, "link statistics: " + error);
+    }
+  }
+}
+
 bool Engine::open(std::string* error) {
   if (!backend_->open(format_, error)) {
     return false;
@@ -687,17 +726,26 @@ int Engine::run() {
   running_ = true;
   std::thread transmit_thread;
   std::thread receive_thread;
+  std::thread status_thread;
   if (transmit) {
     transmit_thread = std::thread([this] { transmit_loop(); });
   }
   if (receive) {
     receive_thread = std::thread([this] { receive_loop(); });
   }
+  // The link's own statistics go to the log once a second, whichever directions
+  // this end runs: they are the only thing that can say why a link delivered what
+  // it did, and a run without them answers that question a day later, in a
+  // comment, from memory (ticket 09).
+  status_thread = std::thread([this] { status_loop(); });
   if (transmit_thread.joinable()) {
     transmit_thread.join();
   }
   if (receive_thread.joinable()) {
     receive_thread.join();
+  }
+  if (status_thread.joinable()) {
+    status_thread.join();
   }
   running_ = false;
 

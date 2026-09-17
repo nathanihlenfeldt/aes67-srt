@@ -312,6 +312,38 @@ TEST_CASE(transport_a_loopback_has_no_link_statistics) {
   CHECK_EQ(stats.rtt_ms, -1.0);  // untouched, not quietly filled with zeroes
 }
 
+TEST_CASE(transport_the_statistics_render_as_one_line) {
+  // The formatter is where the diagnostic lives, and it is pure, so it is tested
+  // with values rather than a socket: a run that delivered a fraction of what it
+  // offered has to be readable from the log, and a mislabelled figure is worse
+  // than a missing one.
+  LinkStats stats;
+  stats.rtt_ms = 12.34;
+  stats.bandwidth_mbps = 74.5;
+  stats.receive_rate_mbps = 3.1;
+  stats.receive_buffer_ms = 120;
+  stats.negotiated_latency_ms = 118;
+  stats.send_buffer_ms = 120;
+  stats.packets_received = 4801;
+  stats.packets_lost = 2;
+  stats.packets_retransmitted = 7;
+  stats.packets_dropped = 0;
+
+  const std::string line = aes67_srt::transport::to_string(stats);
+  const auto has = [&line](const std::string& needle) {
+    return line.find(needle) != std::string::npos;
+  };
+  CHECK(has("rtt 12.3 ms"));  // one decimal, not the whole double
+  CHECK(has("bandwidth 74.5 Mbps"));
+  CHECK(has("receive 3.1 Mbps"));  // the figure that names a starved link
+  CHECK(has("receive buffer 120 ms"));
+  CHECK(has("latency 118 ms"));
+  CHECK(has("packets received 4801"));
+  CHECK(has("lost 2"));
+  CHECK(has("retransmitted 7"));
+  CHECK(has("dropped 0"));
+}
+
 TEST_CASE(transport_carries_frames_both_ways_on_one_connection) {
   if (skip_without_srt("the loopback test")) {
     return;
@@ -387,6 +419,12 @@ TEST_CASE(transport_carries_frames_both_ways_on_one_connection) {
   // The negotiated delay, which is the number the UI will label "delay".
   CHECK(stats.negotiated_latency_ms > 0);
   CHECK(listener.uptime_seconds() > 0.0);
+  // And it renders: the log line an operator reads has to come from the same
+  // structure the UI polls, not from a second path that can disagree with it.
+  const std::string rendered = aes67_srt::transport::to_string(stats);
+  CHECK(rendered.find("rtt ") != std::string::npos);
+  CHECK(rendered.find("packets received ") != std::string::npos);
+  CHECK(rendered.find("dropped 0") != std::string::npos);
 
   caller.close();
   listener.close();

@@ -225,6 +225,8 @@ class Engine {
  private:
   void transmit_loop();
   void receive_loop();
+  /** Once a second, put the link's own statistics in the log (ticket 09). */
+  void status_loop();
   void close();
 
   /** Move whatever complete frames have arrived into the playout buffer. */

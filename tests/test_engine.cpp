@@ -12,6 +12,7 @@
 #include "audio_bytes.hpp"
 #include "clock/resampler.hpp"
 #include "config.hpp"
+#include "log.hpp"
 #include "test_framework.hpp"
 #include "transport/link.hpp"
 #include "wire/frame.hpp"
@@ -464,4 +465,32 @@ TEST_CASE(engine_refuses_a_clock_it_could_not_fill) {
   CHECK(!engine.prepare(config, &error));
   CHECK(contains(error, "alarm_delay_ms"));
   CHECK(contains(error, "playout buffer"));
+}
+
+TEST_CASE(engine_says_once_that_a_loopback_has_no_link_statistics) {
+  // The status thread (ticket 09's missing diagnostic) runs whichever directions
+  // this end has, and it must report the absence of statistics rather than stay
+  // silent — a loopback is a legitimate configuration, so the log says why there
+  // is no RTT rather than leaving an operator to wonder.
+  Config config = engine_config(1, "loopback", 0);
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+
+  int result = -1;
+  std::thread running([&engine, &result] { result = engine.run(); });
+  // Past one status interval, so the thread has had exactly one chance to speak.
+  std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+  engine.stop();
+  running.join();
+
+  CHECK_EQ(result, 0);
+  bool found = false;
+  for (const std::string& line : aes67_srt::log().tail(200)) {
+    if (line.find("link statistics:") != std::string::npos &&
+        line.find("loopback") != std::string::npos) {
+      found = true;
+    }
+  }
+  CHECK(found);
 }

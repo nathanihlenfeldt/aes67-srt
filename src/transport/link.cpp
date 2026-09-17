@@ -3,7 +3,9 @@
 #include <chrono>
 #include <cstring>
 #include <deque>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <vector>
 
 #include "log.hpp"
@@ -468,6 +470,19 @@ bool Link::stats(LinkStats* out, std::string* error) const {
   out->packets_dropped = performance.pktRcvDropTotal;
   return true;
 #endif
+}
+
+std::string to_string(const LinkStats& stats) {
+  std::ostringstream out;
+  out << std::fixed << std::setprecision(1) << "rtt " << stats.rtt_ms
+      << " ms, bandwidth " << stats.bandwidth_mbps << " Mbps, receive "
+      << stats.receive_rate_mbps << " Mbps, receive buffer "
+      << stats.receive_buffer_ms << " ms, latency " << stats.negotiated_latency_ms
+      << " ms, send buffer " << stats.send_buffer_ms << " ms, packets received "
+      << stats.packets_received << ", lost " << stats.packets_lost
+      << ", retransmitted " << stats.packets_retransmitted << ", dropped "
+      << stats.packets_dropped;
+  return out.str();
 }
 
 }  // namespace aes67_srt::transport

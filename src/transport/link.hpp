@@ -108,4 +108,13 @@ class Link {
   Impl* impl_;
 };
 
+/**
+ * The statistics as one line, for the log and the UI.
+ *
+ * The class exposes these and, until this existed, nothing printed them — so a
+ * run that delivered a fraction of what it offered could not say why from inside
+ * the run. One line a second is the diagnostic (ticket 09's two-ended run).
+ */
+std::string to_string(const LinkStats& stats);
+
 }  // namespace aes67_srt::transport
