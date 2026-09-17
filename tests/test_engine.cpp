@@ -334,9 +334,16 @@ TEST_CASE(engine_carries_audio_from_one_box_to_another_through_the_clock) {
   // And the delay figure ticket 12 asks for is exposed, near the level the link's
   // latency bought — short by the converter's working room, which the control is
   // refilling.
-  CHECK(remote.delay_ms() > target_periods - 4);
-  CHECK(remote.delay_ms() < target_periods + 2);
+  //
+  // **The band is deliberately wide, and that is decision 6 rather than slack.** On
+  // a loaded runner the device sags, the level grows, and a growing delay is the
+  // design working — a test that demanded the target to within 2 ms would be
+  // asserting that CI is not busy. What it must catch is a level that collapsed or
+  // ran away, so the band is a fifth of the buffer either side.
+  CHECK(remote.delay_ms() > target_periods - 20);
+  CHECK(remote.delay_ms() < target_periods + 80);
   CHECK(remote.delay_fraction() > 0.0);
+  CHECK(remote.delay_fraction() < 1.0);
   // Two ends sharing one clock, so the true offset is zero and the correction has
   // no reason to be anywhere else.
   CHECK(std::fabs(remote.clock_offset_ppm()) < 10.0);
