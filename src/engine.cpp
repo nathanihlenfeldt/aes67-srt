@@ -424,18 +424,27 @@ bool Engine::play_one_period(std::string* error) {
 
   uint64_t position = 0;
   std::string reason;
+  const uint64_t short_before = resampler_.short_pulls();
   const bool played = resampler_.pull(playout_.get(), rx_period_.data(),
                                       format_.period_frames, &position, &reason);
-  if (!played) {
-    // Either the buffer has nothing playable or the resampler refused; both mean
-    // the device is owed a period it cannot have. Silence, counted, and named in
-    // the log the first time and then every thousand periods — a fault that repeats
-    // every millisecond must not flood the log it appears in.
+  // A pull that could not be filled is *success* to the resampler — the device is
+  // owed a period and the rest is silence — so the only way to know it happened is
+  // the resampler's own count. Without this the engine reports a level sitting high
+  // while the device is fed silence and counts none of it, which is precisely the
+  // situation worth seeing: a link that cannot deliver what it offers.
+  const bool short_pull = resampler_.short_pulls() != short_before;
+  if (!played || short_pull) {
+    // Either the buffer has nothing playable, the resampler could not fill the
+    // period, or the resampler refused; all three mean the device is owed a period
+    // it cannot have. Silence, counted, and named in the log the first time and
+    // then every thousand periods — a fault that repeats every millisecond must not
+    // flood the log it appears in.
     ++silence_periods_;
     if (silence_periods_ == 1 || silence_periods_ % 1000 == 0) {
-      log().write(LogLevel::warn, "no audio to play (" +
-                                      std::to_string(silence_periods_) +
-                                      " periods of silence so far): " + reason);
+      log().write(LogLevel::warn,
+                  "no audio to play (" + std::to_string(silence_periods_) +
+                      " periods of silence so far, delay " +
+                      std::to_string(delay_ms()) + " ms): " + reason);
     }
     std::memset(rx_period_.data(), 0, rx_period_.size());
   }
@@ -597,10 +606,18 @@ int Engine::run() {
   }
   running_ = false;
 
-  log().write(LogLevel::info, "engine: stopped after " +
-                                  std::to_string(frames_sent_) + " frames sent, " +
-                                  std::to_string(frames_received_) + " received, " +
-                                  std::to_string(frames_refused_) + " refused");
+  log().write(LogLevel::info,
+              "engine: stopped after " + std::to_string(frames_sent_) +
+                  " frames sent, " + std::to_string(frames_received_) +
+                  " received, " + std::to_string(frames_refused_) + " refused" +
+                  // What the clock ended up holding, and what it decided the offset
+                  // between the two clocks was: the two numbers an operator or a
+                  // hardware session wants out of a run, and the ones the control
+                  // surface will show continuously (ticket 12).
+                  "; playout delay " + std::to_string(delay_ms()) +
+                  " ms, clock correction " + std::to_string(clock_offset_ppm()) +
+                  " ppm, " + std::to_string(silence_periods_) +
+                  " periods of silence");
   close();
   return 0;
 }

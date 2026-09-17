@@ -341,6 +341,46 @@ TEST_CASE(engine_carries_audio_from_one_box_to_another_through_the_clock) {
   remote.stop();
 }
 
+TEST_CASE(engine_counts_the_silence_it_feeds_a_link_that_cannot_fill_the_clock) {
+  // The case the two-machine run found: a link delivering far less than the
+  // appliance offers. The clock primes past its deadline, plays what little there
+  // is, and the device is fed silence for the rest — and the *counting* is the
+  // point, because a level sitting high while the device gets silence and nothing
+  // is counted is exactly the situation an operator cannot diagnose.
+  //
+  // One engine in loopback mode, so the whole receive path is exercised without a
+  // second process or a thread.
+  Config config = engine_config(8, "loopback", 0);
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+  CHECK(engine.open(&error));
+
+  // One frame, and no more: less than the converter's working room needs to fill a
+  // period, which is what makes this a *short* pull rather than a refusal.
+  const AudioFormat format = aes67_srt::audio::audio_format_from(config.audio);
+  const std::vector<uint8_t> period = audio_bytes::constant_period(format, 1000000);
+  CHECK(engine.backend()->write(period.data(), format.period_frames, &error));
+  CHECK(engine.step_transmit(&error));
+  CHECK_EQ(engine.frames_sent(), uint64_t{1});
+
+  // Turn the receive side past the priming deadline: the level never reaches its
+  // target, so playout starts when the deadline expires rather than never.
+  for (int turn = 0; turn < config.link.alarm_delay_ms + 20; ++turn) {
+    CHECK(engine.step_receive(&error));
+  }
+
+  CHECK(engine.silence_periods() >
+        static_cast<uint64_t>(config.link.alarm_delay_ms));
+  CHECK(engine.delay_ms() <= 2.0);  // one frame of audio, and no more
+  CHECK(engine.delay_fraction() < 0.01);
+  std::cout << "    engine starved link: " << engine.silence_periods()
+            << " periods of silence counted, delay " << engine.delay_ms() << " ms"
+            << std::endl;
+
+  engine.stop();
+}
+
 TEST_CASE(engine_refuses_a_clock_it_could_not_fill) {
   // The clock's geometry comes from the link's own numbers, so a configuration
   // whose alarm is not comfortably above the latency it alarms about has no playout
