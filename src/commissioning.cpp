@@ -1,6 +1,8 @@
 #include "commissioning.hpp"
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 #include "log.hpp"
 
@@ -46,24 +48,48 @@ bool subscribe_sink(daemon::DaemonClient* daemon, const BlockConfig& block,
   }
   ++counts->sinks_subscribed;
 
+  // The status is not readable the instant the sink is added: the driver has to
+  // join the multicast group and the sender has to be transmitting before a
+  // single packet exists to count. Measured on the Pi on 2026-09-17 — the first
+  // read said "has a stream but is not receiving", and the same sink said
+  // `receiving_rtp_packet` within a second. Reading once and calling that a
+  // failure fails a run that is working, which is worse than useless.
+  //
+  // Two seconds is the deadline: long enough for an IGMP join and a packet or two,
+  // short enough that a sink which is genuinely silent is still reported while
+  // somebody is watching.
+  constexpr int k_receive_poll_attempts = 20;
+  constexpr int k_poll_delay_ms = 100;
   daemon::SinkStatus status;
-  if (!daemon->get_sink_status(stream_id, &status, error)) {
-    return fail(error, "commissioning: cannot read sink " +
-                           std::to_string(stream_id) +
-                           " status: " + reason_of(error));
+  bool receiving = false;
+  for (int attempt = 0; attempt < k_receive_poll_attempts; ++attempt) {
+    if (!daemon->get_sink_status(stream_id, &status, error)) {
+      return fail(error, "commissioning: cannot read sink " +
+                             std::to_string(stream_id) +
+                             " status: " + reason_of(error));
+    }
+    if (status.in_use && status.receiving_rtp_packet) {
+      receiving = true;
+      break;
+    }
+    if (!status.in_use) {
+      break;  // no stream on this sink at all, and waiting cannot change that
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(k_poll_delay_ms));
   }
-  if (status.in_use && status.receiving_rtp_packet) {
+
+  if (receiving) {
     ++counts->sinks_receiving;
     return true;
   }
   // The one thing commissioning is here to find out, per stream rather than as a
   // count at the end: which one is silent is the whole question.
-  log().write(
-      LogLevel::warn,
-      "commissioning: block " + std::to_string(block.index) + " sink " +
-          std::to_string(stream_id) +
-          (status.in_use ? " has a stream but is not receiving RTP packets yet"
-                         : " has no stream at all"));
+  log().write(LogLevel::warn,
+              "commissioning: block " + std::to_string(block.index) + " sink " +
+                  std::to_string(stream_id) +
+                  (status.in_use
+                       ? " has a stream but received no RTP packets in two seconds"
+                       : " has no stream at all"));
   return true;
 }
 
