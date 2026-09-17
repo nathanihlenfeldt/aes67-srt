@@ -204,3 +204,92 @@ that lands before an unfillable hole never plays again.
 
 **Reproduce:** `./build/tests/aes67-srt-tests` (`clock_` cases). The suite runs **104 tests**; the
 clock's 10 simulated runs cover a little over ten hours of simulated audio in about 18 seconds.
+
+## Increment 2, the ratio control, measured 2026-09-17
+
+`src/clock/ratio_control.{hpp,cpp}`, proved by `tests/test_clock_ratio.cpp` — 11 cases, six of them
+simulations of an hour or more. The loop steers the **buffer level**, as decided above: it reads no
+clock and needs no figure for `sigma`.
+
+The plant is exact and worth stating once: **a ratio error of 1 ppm moves the level by one
+thousandth of a millisecond per second** (a ppm of rate error moves 48 kHz audio by a microsecond a
+second). So the plant is an integrator with gain 1/1000 ms/s per ppm — and that single number turns a
+loop's period and damping into its two gains, `k_integral = 1000·ω²` and `k_proportional = 2000·ζω`.
+
+### The first draft was wrong, and the trace is what showed it
+
+The first version had **no proportional term**, on the reasoning that averaging the level would damp
+the loop. It does not. Averaging is a lag, a lag is phase, and a double integrator (the plant, plus
+the integral term a persistent error requires) with *any* extra lag is unstable at every gain. It
+looked plausible; it was wrong; and nothing about the code said so.
+
+What said so was a trace of `(level, average, correction)` every ten minutes, printed by the
+simulation:
+
+```
+t=600 s   level=126 avg=122.95 ppm=3.08
+t=1800 s  level=117 avg=120.97 ppm=30.49     <- past the true 10 ppm and climbing
+t=3600 s  level=135 avg=123.65 ppm=-32.78
+t=4800 s  level=127 avg=139.19 ppm=85.32     <- three times the previous swing
+t=9000 s  level=3   avg=52.93  ppm=136.74
+t=10200 s level=150 avg=93.37  ppm=-200      <- at the clamp
+```
+
+The correction grew by a factor of three an oscillation until it hit the ±200 ppm clamp, and the
+level swung between **3 ms and 260 ms** over four hours, with 36 underruns on the way. The fix is the
+classical one: the proportional term *is* the damping, because in a loop on a level it is the term
+proportional to the error's derivative. The averaging is still there, for the one job it is good at —
+turning the level's 1 ms staircase into something a proportional term can act on.
+
+**A second thing the trace forced.** The rate limit (then 1 ppm/s) has to be generous enough not to
+throttle the proportional term: answering a level that moved 20 ms means a correction of tens of ppm,
+and at 1 ppm/s that takes tens of seconds while the loop's whole period is thirty minutes — the
+rate limit, not the loop, would decide how fast a disturbance is damped. It is 50 ppm/s, and the
+invariant that comes with it is absolute: **the ratio's rate of change is bounded, whatever is
+asking.**
+
+### What it measures, at the gains it ships with
+
+Loop period 2000 s, damping 0.8, target 120 ms, from a buffer primed to 120 ms:
+
+| Run | Result |
+|---|---|
+| 4 h, sender **+10 ppm** | level **120 → 120 ms**, band **±2 ms**, correction **10.0 ppm**, inside 0.3 ppm by **23.6 min** |
+| 2 h, receiver **+10 ppm** | level 120 → 120 ms, band ±2 ms, correction **−9.9999 ppm** |
+| 2 h, sender **+1 ppm** | level 120 → 120 ms, band ±1 ms, correction **0.75 of 1 ppm** |
+| 1 h, **matched** clocks | band **±0 ms**, correction **exactly zero** |
+| 1 h, a **20 ms burst** at 1 h | excursion 112–140 ms, **back to 120**, correction 10.0004 ppm |
+| 1 h at +10 ppm through **0–10 ms of arrival jitter** | level 111–129 ms (it floats with the spread), correction **9.69 ppm**, every period byte-exact |
+| a target of 400 ms against a 120 ms buffer | correction held inside its clamp, level 120 → 401 ms, **nothing dropped** |
+
+**Jitter is the measurement that matters most here, because it is the reason this design was
+chosen.** The section above records that a direct estimate needs an 11-second window to resolve
+10 ppm at 5 ms of arrival jitter — and 0–10 ms is exactly the spread whose `sigma` nobody has
+measured. Against that, the loop on the level tracked the offset to within 0.5 ppm, in order, with
+every period byte-exact. **A loop that measures no time cannot be fooled by time.** That claim was the
+whole argument for building it this way, and it is now a test rather than a claim. What the model
+does *not* reproduce is a spiky distribution — this jitter is uniform in [0, spread] — so a real link
+with bursts remains the hardware session's question.
+
+### Two findings for the tickets that follow
+
+**1. The level converges faster than the ppm figure, and that is structural.** At 1 ppm the loop held
+the level to ±1 ms inside the run while its offset *estimate* was still 0.75 of 1 ppm after two hours
+— because the integral only grows while a residual error persists, and holding the level means there
+is almost none. So the ppm figure is **not** a clock measurement until it has been quiet for hours,
+while the level is the number to trust immediately. Ticket 12's UI should trend the level and treat
+the ppm as a slow diagnostic; anyone comparing it against the 10 ppm this project assumes should wait,
+not read it early.
+
+**2. A rate-limited loop settles a misconfigured target rather than swinging through it.** With the
+rate limit and the anti-windup, the misconfigured case climbs monotonically to the unreachable target
+and stops at the clamp. Without them it overshot to 436 ms and swung back to the other clamp — a
+difference an operator *would* see in the delay figure, and which is now a test.
+
+**Reproduce:** `./build/tests/aes67-srt-tests` (`clock_the_loop`, `clock_arrival_jitter`,
+`clock_a_target`). The suite runs **115 tests**; the loop's six simulated runs cost about 10 seconds.
+The trace that found the instability is `Plan::trace_ms` in that test file.
+
+**What increment 2 does not include.** The resampler: the simulation's take rate stands in for it, as
+it did in increment 1, and increment 3 replaces it with libsamplerate. Nothing here has touched a
+device's clock, PTP, or a real link.

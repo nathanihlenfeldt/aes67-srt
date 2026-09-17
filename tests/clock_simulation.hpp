@@ -116,4 +116,36 @@ inline void check_clean(const std::string& what, uint64_t count,
                        std::to_string(count) + " time(s) " + detail);
 }
 
+/**
+ * Arrival jitter, deterministic and repeatable.
+ *
+ * A link does not deliver on a metronome: SRT schedules a frame's arrival with
+ * its TSBPD, so the spread is small, but the spread is exactly what
+ * `docs/research/clock-recovery.md` says the direct-estimate alternative depends
+ * on and nobody has measured. A loop closed on the level is *supposed* to be
+ * immune, because it never measures time — and a claim like that is worth
+ * something only if a test puts jitter in front of it.
+ *
+ * A linear congruential generator rather than `<random>`: the sequence has to be
+ * the same on every platform and every run, or "no sample was lost" becomes a
+ * statement about the weather.
+ */
+class Jitter {
+ public:
+  explicit Jitter(uint64_t seed = 20260917) : state_(seed) {}
+
+  /** A delay in milliseconds, in [0, |spread_ms|]. */
+  uint64_t next(uint64_t spread_ms) {
+    if (spread_ms == 0) {
+      return 0;
+    }
+    // Numerical Recipes' constants: good enough for a deadline, and portable.
+    state_ = state_ * 6364136223846793005ull + 1442695040888963407ull;
+    return (state_ >> 33) % (spread_ms + 1);
+  }
+
+ private:
+  uint64_t state_;
+};
+
 }  // namespace clock_sim
