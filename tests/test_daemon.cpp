@@ -326,7 +326,10 @@ TEST_CASE(daemon_a_sink_document_carries_every_field_the_daemon_reads) {
                           "ignore_refclk_gmid", "map"}) {
     CHECK(sink.contains(key));
   }
-  CHECK_EQ(sink.at("delay").get<int>(), 0);
+  // Non-zero: the driver refuses a sink whose receive buffer is zero. Measured on
+  // the Pi on 2026-09-17 — 384 and 576 accepted, 0 refused with
+  // "(driver) command failed", which names nothing.
+  CHECK_EQ(sink.at("delay").get<int>(), 384);
 }
 
 TEST_CASE(daemon_a_sink_without_a_remote_sdp_is_refused_and_names_the_block) {
@@ -348,10 +351,11 @@ TEST_CASE(daemon_a_sink_without_a_remote_sdp_is_refused_and_names_the_block) {
   CHECK_EQ(sink.at("use_sdp").get<bool>(), true);
   CHECK_EQ(sink.at("sdp").get<std::string>(), std::string("v=0\r\ns=Remote\r\n"));
 
-  // The daemon adds no delay of its own. The A/V delay line is ours
-  // (egress.delay_ms), so there is exactly one place in the path where a sample
-  // can be held back and exactly one control for it.
-  CHECK_EQ(sink.at("delay").get<int>(), 0);
+  // The sink's receive buffer, and it must not be zero: the driver refuses that
+  // outright (measured 2026-09-17). It is not the A/V delay line — that is ours
+  // (egress.delay_ms) — but the buffer that absorbs network jitter before the
+  // audio is handed to ALSA, so the two are different things wearing one name.
+  CHECK_EQ(sink.at("delay").get<int>(), 384);
 
   // A stream from another clock domain plays at the wrong rate and sounds
   // subtly wrong rather than obviously broken, so it is refused rather than

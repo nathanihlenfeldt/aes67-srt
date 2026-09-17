@@ -358,6 +358,30 @@ json make_block_source(const Config& config, const BlockConfig& block) {
   };
 }
 
+/**
+ * The sink's playout delay, in samples.
+ *
+ * **The RAVENNA driver refuses a sink with this set to zero**, and it does so with
+ * a generic refusal that names nothing:
+ *
+ *   delay 384 -> HTTP 200      delay 576 -> HTTP 200
+ *   delay   0 -> HTTP 400 "failed to add sink 0 : (driver) command failed"
+ *
+ * Measured on the Pi, 2026-09-17, against a real `AES67-TX-1` announcement. The
+ * first version of this document sent 0, reasoning that the daemon should not add
+ * a delay line because the A/V delay is ours — which mistook the mechanism. This
+ * is not a competing delay line: it is the sink's *receive buffer*, the thing that
+ * absorbs network jitter and aligns the RTP timeline with the ALSA one. Zero means
+ * no buffer at all, which is unusable even where it is accepted.
+ *
+ * 384 samples is the value in the daemon's own sink template (`daemon/json.cpp` at
+ * `json_to_sink`), so it is the delay the daemon gives a sink created in its own
+ * web UI — 8 ms at 48 kHz, which is also eight of our 1 ms periods. A site with a
+ * jitterier network may want more, and that is a configuration question like TTL
+ * and DSCP rather than something decided here.
+ */
+constexpr int k_sink_playout_delay_samples = 384;
+
 bool make_block_sink(const BlockConfig& block, const std::string& remote_sdp,
                      json* sink, std::string* error) {
   if (sink == nullptr) {
@@ -377,7 +401,9 @@ bool make_block_sink(const BlockConfig& block, const std::string& remote_sdp,
       // (config egress.delay_ms), so there is exactly one place in the path
       // where a sample can be held back, and it is the one the operator
       // controls.
-      {"delay", 0},
+      // The sink's receive buffer, not a competing delay line — see the note on
+      // k_sink_playout_delay_samples. Zero is refused by the driver.
+      {"delay", k_sink_playout_delay_samples},
       // Subscribe to the SDP below rather than to a `source` URL the daemon
       // would have to fetch.
       {"use_sdp", true},
