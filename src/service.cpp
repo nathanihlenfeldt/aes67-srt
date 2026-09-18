@@ -29,6 +29,13 @@ bool EngineService::running() const {
 
 std::string EngineService::state() const {
   std::lock_guard<std::mutex> lock(mutex_);
+  // Trust the engine over the stored word: `start` sets "starting" and the worker
+  // runs open() before run() marks the engine running, so a listener that is still
+  // waiting for a caller is "starting", not "running" — and a failed open must not
+  // read as running either.
+  if (engine_ != nullptr && engine_->running()) {
+    return "running";
+  }
   return state_;
 }
 
@@ -101,11 +108,6 @@ void EngineService::worker() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     engine = engine_.get();
-    if (engine != nullptr) {
-      // The loops are about to run. A listener may still be waiting for a peer,
-      // but it is started, which is what "running" means here.
-      state_ = "running";
-    }
   }
   const int result = engine != nullptr ? engine->run() : 1;
 
