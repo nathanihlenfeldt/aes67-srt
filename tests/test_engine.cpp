@@ -557,6 +557,83 @@ TEST_CASE(engine_the_link_reconnects_after_the_caller_drops) {
             << site.frames_received() << " after reconnect" << std::endl;
 }
 
+TEST_CASE(engine_the_link_reconnects_under_full_load) {
+  // Issue #32: the light 1-block reconnect test passed, but on the bench a
+  // reconnect under full 64-channel load left the receiver draining at about 640
+  // of the sender's 1000 frames a second, so the sender's buffer climbed and the
+  // link flapped. The cause was a stale error string: the first hard failure after
+  // a drop was never cleared, so every later step_receive returned false, slept the
+  // retry delay, and skipped play_one_period. This measures the *rate*, which the
+  // light test never did.
+  if (!aes67_srt::transport::Link::available()) {
+    std::cout << "  no libsrt in this build: skipping the loaded reconnect test"
+              << std::endl;
+    return;
+  }
+
+  Config site_config = engine_config(8, "listener", 19701);
+  site_config.link.role = "rx";
+  Config first_config = engine_config(8, "caller", 19702, "127.0.0.1:19701");
+  first_config.link.role = "tx";
+  Config second_config = engine_config(8, "caller", 19703, "127.0.0.1:19701");
+  second_config.link.role = "tx";
+
+  Engine site;
+  Engine first;
+  Engine second;
+  std::string error;
+  CHECK(site.prepare(site_config, &error));
+  CHECK(first.prepare(first_config, &error));
+  CHECK(second.prepare(second_config, &error));
+
+  const auto wait_for_frames = [](Engine* engine, uint64_t wanted, int timeout_ms) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (engine->frames_received() >= wanted) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return engine->frames_received() >= wanted;
+  };
+  const auto drain_rate = [](Engine* engine, int ms) {
+    const uint64_t before = engine->frames_received();
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+    return 1000.0 * static_cast<double>(engine->frames_received() - before) / ms;
+  };
+
+  std::thread site_thread([&] { site.run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::thread first_thread([&] { first.run(); });
+  CHECK(wait_for_frames(&site, 500, 15000));
+
+  const double rate_before = drain_rate(&site, 2000);
+
+  // Drop the caller and connect a fresh one, exactly as a reboot does.
+  first.stop();
+  first_thread.join();
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+
+  const uint64_t before = site.frames_received();
+  std::thread second_thread([&] { second.run(); });
+  CHECK(wait_for_frames(&site, before + 500, 30000));
+  const double rate_after = drain_rate(&site, 2000);
+
+  std::cout << "    loaded reconnect: " << rate_before << " frames/s before, "
+            << rate_after << " after" << std::endl;
+
+  second.stop();
+  site.stop();
+  second_thread.join();
+  site_thread.join();
+
+  // The sender offers ~1000 frames a second (one 1 ms period). The receiver must
+  // keep up before *and after* a reconnect; the bench failure was ~640/s after.
+  CHECK(rate_before > 700.0);
+  CHECK(rate_after > 700.0);
+}
+
 TEST_CASE(engine_counts_the_silence_it_feeds_a_link_that_cannot_fill_the_clock) {
   // The case the two-machine run found: a link delivering far less than the
   // appliance offers. The clock primes past its deadline, plays what little there

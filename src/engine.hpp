@@ -285,7 +285,7 @@ class Engine {
   void close();
 
   /** Move whatever complete frames have arrived into the playout buffer. */
-  void receive_into_buffer(std::string* error);
+  bool receive_into_buffer(std::string* error);
 
   /** One period for the device: pulled through the resampler, or silence. */
   bool play_one_period(std::string* error);
@@ -413,6 +413,10 @@ class Engine {
   /** Set by the supervisor when the link is re-established; the receive thread
    *  rebuilds the clock for the new stream and clears it. */
   std::atomic<bool> playout_reset_requested_{false};
+  /** Receive-loop turns so far. The loop rate is the health signal the byte and
+   *  packet counters miss: a receiver that turns at 79/s looks fine per packet
+   *  while it silently fails to drain. Logged once a second. */
+  std::atomic<uint64_t> receive_turns_{0};
 
   /**
    * Requests posted by the control surface's thread, consumed by the receive loop.

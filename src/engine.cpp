@@ -491,6 +491,7 @@ void Engine::reset_playout() {
 }
 
 bool Engine::step_receive(std::string* error) {
+  receive_turns_.fetch_add(1);
   // A link that was re-established starts a new stream, so the clock is rebuilt
   // here, on its own thread, before this turn touches it.
   if (playout_reset_requested_.exchange(false)) {
@@ -504,8 +505,12 @@ bool Engine::step_receive(std::string* error) {
   // out of it for the device. That one-way-in, one-way-out shape is what makes the
   // level a real measurement: it moves only when the sender's rate and ours differ,
   // which is the thing the control steers.
-  receive_into_buffer(error);
-  if (error != nullptr && !error->empty()) {
+  // The return value, not the error string: `error` is not cleared by a successful
+  // receive, so sniffing it made the first hard failure after a reconnect stick for
+  // ever — every later turn reported failure, slept the retry delay, and skipped
+  // play_one_period. That is what made a reconnected link drain at a tenth of the
+  // rate and flap (issue #32).
+  if (!receive_into_buffer(error)) {
     return false;
   }
   return play_one_period(error);
@@ -518,7 +523,7 @@ bool Engine::step_receive(std::string* error) {
  * and counted rather than guessed at, exactly as it was before the clock landed
  * here.
  */
-void Engine::receive_into_buffer(std::string* error) {
+bool Engine::receive_into_buffer(std::string* error) {
   const auto refuse = [this](const std::string& reason) {
     ++frames_refused_;
     log().write(LogLevel::warn, "engine: refused " + reason);
@@ -533,7 +538,7 @@ void Engine::receive_into_buffer(std::string* error) {
     for (int received = 0; received < k_max_messages_per_period; ++received) {
       if (!link_->receive_message(&message_, &timed_out, error)) {
         if (!timed_out) {
-          return;  // the link itself failed; a quiet one is not a failure
+          return false;  // the link itself failed; a quiet one is not a failure
         }
         break;
       }
@@ -553,14 +558,14 @@ void Engine::receive_into_buffer(std::string* error) {
     }
 
     if (!have_frame) {
-      return;  // nothing complete this turn; the rest of the turn plays what we
-               // have
+      return true;  // nothing complete this turn; the rest of the turn plays what
+                    // we have
     }
     if (!reassembler_.take_frame(&rx_bytes_, error)) {
-      return;
+      return true;
     }
     if (rx_bytes_.empty()) {
-      return;
+      return true;
     }
 
     wire::Frame frame;
@@ -597,6 +602,7 @@ void Engine::receive_into_buffer(std::string* error) {
     }
     rx_bytes_.clear();
   }
+  return true;
 }
 
 /**
@@ -922,6 +928,7 @@ void Engine::link_supervisor_loop() {
 
 void Engine::status_loop() {
   bool reported_reason = false;
+  uint64_t last_turns = receive_turns_.load();
   while (!stop_requested_.load()) {
     for (int slice = 0; slice < k_status_interval_ms / k_status_slice_ms &&
                         !stop_requested_.load();
@@ -943,7 +950,11 @@ void Engine::status_loop() {
         link_stats_ = stats;
         link_stats_available_ = true;
       }
-      log().write(LogLevel::info, "link: " + transport::to_string(stats));
+      const uint64_t turns = receive_turns_.load();
+      log().write(LogLevel::info, "link: " + transport::to_string(stats) +
+                                      ", turns " +
+                                      std::to_string(turns - last_turns) + "/s");
+      last_turns = turns;
     } else if (!reported_reason) {
       // A loopback has no statistics and a link that is not up has none either.
       // Say why once, then again only after it has worked: a line every second
