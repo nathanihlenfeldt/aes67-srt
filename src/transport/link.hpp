@@ -25,7 +25,7 @@ struct LinkStats {
   int send_buffer_ms = 0;             // msSndBuf
   int64_t packets_received = 0;       // pktRecvTotal
   int64_t packets_lost = 0;           // pktRcvLossTotal
-  int64_t packets_retransmitted = 0;  // pktRcvRetransTotal
+  int64_t packets_retransmitted = 0;  // pktRcvRetrans: loss recovered
   int64_t packets_dropped = 0;        // pktRcvDropTotal: too late to play
 };
 

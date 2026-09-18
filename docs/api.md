@@ -67,6 +67,15 @@ preflight: it is the commonest way the appliance looks healthy and produces sile
 not answer reports PTP as *unknown* rather than guessing "unlocked", because those are different fixes.
 `link.available` is false on a loopback, which has no statistics to report.
 
+**Reading the link fields.** `packets_retransmitted` is the receiver-side count of packets that
+arrived as retransmissions — loss **recovered**, the companion to `packets_lost` (loss detected).
+SRT has no cumulative `pktRcvRetransTotal`; this is the interval field `pktRcvRetrans`, which
+accumulates because we call `srt_bstats` without clearing (`srt.h:313` is the sender's
+`pktRetransTotal`, and reading *that* on a receiver always reports zero — it did, before this was
+fixed). `bandwidth_mbps` is SRT's **estimate** of link capacity, which live mode only roughs in and
+which is meaningless on a receiver we measured sitting at 6,165 "Mb/s" over a Wi-Fi link. The number
+to trust is `receive_rate_mbps`.
+
 `pending_restart` lists the configuration sections that were saved but need a restart to take effect.
 
 ## `GET /api/log?lines=N`

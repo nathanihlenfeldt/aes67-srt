@@ -193,20 +193,20 @@ want the interval-based ones.
 | `msRTT` | ms | both | Round-trip time (`statistics.md:110`) |
 | `mbpsBandwidth` | Mbps | both | Estimated link capacity (`statistics.md:111`) |
 | `mbpsRecvRate` | Mbps | receiver | Actual throughput, to compare against the 74.5 Mbit/s we expect (`statistics.md:90`) |
-| `pktRcvDrop` | packets | receiver | **Packets `TLPKTDROP` discarded: must stay 0** (`statistics.md:95`, defined at `:162`) |
+| `pktRcvDrop` | packets | receiver | Packets too late to play, discarded by `TLPKTDROP` (`statistics.md:95`, defined at `:162`) |
 | `pktRcvRetrans` | packets | receiver | Retransmissions received — "the link is working for it" (`statistics.md:80`) |
 | `pktRcvLoss` | packets | receiver | Presently missing packets (`statistics.md:78`) |
 | `msSndBuf` | ms | sender | Send buffer depth (`statistics.md:118`) |
 
-Accumulated totals exist alongside the interval figures (`pktRecvTotal`, `pktRcvLossTotal`,
-`pktRetransTotal`, `pktRcvDropTotal`), as do the decryption counters (`pktRcvUndecrypt`,
-`pktRcvUndecryptTotal`). **Note `pktRetransTotal` in particular**: the accumulated
-receiver-side retransmit counter does *not* follow the `pktRcv…` pattern that its own
-interval figure (`pktRcvRetrans`) suggests, so inferring the name from the documentation
-produces code that does not compile. The header is the authority (`srtcore/srt.h:313`
-against `:338`, verified against the installed 1.5.7). **The whole "show me
-the delay" requirement needs no invention: `msRcvTsbPdDelay` is the number, and `msRcvBuf` is its
-trend.**
+Accumulated totals exist for most of these (`pktRecvTotal`, `pktRcvLossTotal`, `pktRcvDropTotal`), as
+do the decryption counters. **`pktRcvRetrans` has no accumulated twin, and `pktRetransTotal` is not
+it.** `pktRetransTotal` (`srtcore/srt.h:313`) is the **sender's** total; on a receiver it stays 0,
+which is what we reported for months while a link was in fact recovering thousands of packets. The
+receiver-side interval field `pktRcvRetrans` (`srtcore/srt.h:338`) is the counter to use, and because
+our `srt_bstats` call does not clear it, it accumulates from connect — which is exactly the cumulative
+figure the UI wants. Confirmed on a 64-channel link at 74 Mbit/s: received 125,235, lost 5,309,
+retransmitted 5,430, dropped 1,438. **The whole "show me the delay" requirement needs no invention:
+`msRcvTsbPdDelay` is the number, and `msRcvBuf` is its trend.**
 
 ## The receive and send timeouts must be zero, and 0 *is* non-blocking
 

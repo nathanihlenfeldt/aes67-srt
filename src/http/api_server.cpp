@@ -259,8 +259,9 @@ async function poll() {
     ];
     if (s.link && s.link.available) {
       figures.push(['RTT', s.link.rtt_ms.toFixed(1) + ' ms'],
-                   ['bandwidth', s.link.bandwidth_mbps.toFixed(1) + ' Mbps'],
                    ['receive rate', s.link.receive_rate_mbps.toFixed(1) + ' Mbps'],
+                   ['packets lost', s.link.packets_lost],
+                   ['retransmitted', s.link.packets_retransmitted],
                    ['packets dropped', s.link.packets_dropped]);
     }
     $('figures').innerHTML = figures.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('');

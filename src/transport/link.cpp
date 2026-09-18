@@ -509,10 +509,13 @@ bool Link::stats(LinkStats* out, std::string* error) const {
   out->send_buffer_ms = performance.msSndBuf;
   out->packets_received = performance.pktRecvTotal;
   out->packets_lost = performance.pktRcvLossTotal;
-  // NOT pktRcvRetransTotal: the accumulated receiver-side retransmit counter
-  // breaks the pktRcv* pattern the interval figure follows (srt.h:313 against
-  // :338). Guessing cost a compile error; the header is the authority.
-  out->packets_retransmitted = performance.pktRetransTotal;
+  // The receiver-side counter: packets that arrived as retransmissions, i.e. loss
+  // being *recovered*. There is no global pktRcvRetransTotal (srt.h:338 is the
+  // interval field pktRcvRetrans, :313 is the sender's pktRetransTotal), and with
+  // a non-clearing srt_bstats that interval field accumulates from connect, so it
+  // is the cumulative figure the UI wants. Confirmed on a 64-channel link:
+  // received 125,235, lost 5,309, retransmitted 5,430, dropped 1,438.
+  out->packets_retransmitted = performance.pktRcvRetrans;
   // Counts what TLPKTDROP threw away: packets that arrived after their play
   // time. Zero on a healthy link; the number to watch when the link sags.
   out->packets_dropped = performance.pktRcvDropTotal;
