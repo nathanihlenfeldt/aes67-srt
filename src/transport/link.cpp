@@ -270,11 +270,15 @@ bool Link::open(const Config& config, std::string* error) {
                static_cast<int>(wire::k_max_message_bytes))) {
     return refuse("SRTO_PAYLOADSIZE", "");
   }
-  // SRT's default for this is TRUE in live mode, and it discards exactly the
-  // audio this design exists to preserve. Failing to turn it off is fatal rather
-  // than a warning: a link that silently drops audio is worse than no link.
-  if (!set_bool(socket, SRTO_TLPKTDROP, false)) {
-    return refuse("SRTO_TLPKTDROP", "could not disable too-late packet drop");
+  // Leave SRT's default on. Disabling it was decision 6's first instinct — keep
+  // every packet, let delay grow — but a packet that arrives after its play time
+  // cannot be delivered at all: with TLPKTDROP off the receiver head-of-line
+  // blocks waiting for a retransmission that no longer helps, stops draining,
+  // and the link dies. Measured at 64 channels over a lossy link: receiving
+  // froze after ~2 s. What TLPKTDROP discards is audio too late to play; our own
+  // playout still neither drops nor invents frames in the timeline it does get.
+  if (!set_bool(socket, SRTO_TLPKTDROP, true)) {
+    return refuse("SRTO_TLPKTDROP", "could not leave too-late packet drop on");
   }
   if (mode == "rendezvous" && !set_bool(socket, SRTO_RENDEZVOUS, true)) {
     return refuse("SRTO_RENDEZVOUS", "");
@@ -509,8 +513,8 @@ bool Link::stats(LinkStats* out, std::string* error) const {
   // breaks the pktRcv* pattern the interval figure follows (srt.h:313 against
   // :338). Guessing cost a compile error; the header is the authority.
   out->packets_retransmitted = performance.pktRetransTotal;
-  // Counts what TLPKTDROP threw away. With it disabled this must stay zero, and
-  // a test asserts exactly that.
+  // Counts what TLPKTDROP threw away: packets that arrived after their play
+  // time. Zero on a healthy link; the number to watch when the link sags.
   out->packets_dropped = performance.pktRcvDropTotal;
   return true;
 #endif

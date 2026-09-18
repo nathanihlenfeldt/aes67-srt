@@ -41,14 +41,17 @@ spans roughly seven SRT messages. **The frame format itself is unaffected** — 
 SRT message" is hereby corrected (see the amendment on that ADR). This is precisely the assumption
 ticket 02 existed to check.
 
-**2. `TLPKTDROP` is ON by default in live mode, and must be explicitly disabled.** Its documented
-default is "true in Live mode, false in File mode" (`docs/API/API-socket-options.md:1685`). Decision 6
-says audio is never dropped, so both ends must set `SRTO_TLPKTDROP = 0` explicitly. Worse, the same
-option "is automatically enabled in sender if receiver supports it"
-(`docs/API/API-socket-options.md:1682`), so leaving it on at one end can re-enable it at the other.
-The saving grace: `pktRcvDrop` counts exactly the packets that mechanism discards
-(`docs/API/statistics.md:95`, `:162`), so **"we never drop audio" is directly assertable** rather
-than merely intended — that is now an acceptance criterion on ticket 07, not a hope.
+**2. `TLPKTDROP` is ON by default in live mode — and turning it off stalls the link.** Its documented
+default is "true in Live mode, false in File mode" (`docs/API/API-socket-options.md:1685`), and the
+same option "is automatically enabled in sender if receiver supports it"
+(`docs/API/API-socket-options.md:1682`). Decision 6's first reading was to force it off at both ends so
+no audio is ever dropped. **That reading is wrong, and measured wrong.** A packet that arrives after
+its play time cannot be delivered at all: with `TLPKTDROP` off the receiver head-of-line blocks waiting
+for a retransmission that no longer helps, stops draining, and the link dies. At 64 channels over a
+lossy link, receiving froze after ~2 s (2,126 packets, then flat) while the sender's buffer filled to
+1,025 ms. `TLPKTDROP = 1` fixed it: 64 channels now run ~1,000 packets/s continuously. The option
+stays **on**, and `pktRcvDrop` (`docs/API/statistics.md:95`, `:162`) is the count of packets too late
+to play — zero on a healthy link, the number to watch when the link sags.
 
 **3. Bonding is a build-time opt-in, and incompatible with rendezvous.** `ENABLE_BONDING` defaults
 to **OFF** (`CMakeLists.txt:174`), so a distribution's libsrt may not contain the feature at all,
@@ -150,13 +153,13 @@ message contains was never part of ADR 0001, only what a *frame* contains.
 - Time-based delivery is `SRTO_TSBPDMODE`, default **true in live mode, false in file mode**
   (`docs/API/API-socket-options.md:1729`).
 
-**Unverified, and it matters.** With `TLPKTDROP` disabled, a packet that arrives *after* its play
-time should be delivered late rather than discarded — which is the mechanism our entire "delay
-grows, audio is never lost" policy rests on. The documentation supports the intent (the latency
-buffer "compensates" for retransmission) but does not state the late-arrival behaviour in those
-words, and it does not say what the application sees. **This is a measurement, not a reading, and
-ticket 07 owns it**: starve a link deliberately and assert that (a) no frame is lost, (b) the
-reported delay increases, and (c) `pktRcvDrop` stays at zero.
+**Measured, and the answer is "discarded".** A packet that arrives *after* its play time is gone:
+with `TLPKTDROP` off the receiver does not deliver it late, it blocks — and at 64 channels the link
+stops delivering altogether (see item 2 above). There is no "delay grows, audio is never lost" mode to
+lean on; a packet past its play time is unplayable, and the honest policy is to count it and move on.
+**Ticket 07 now owns the opposite assertion**: starve a link deliberately and assert that (a) frames
+still flow, (b) the reported delay increases, and (c) any loss shows up in `pktRcvDrop` rather than as a
+stall.
 
 ## Encryption
 
@@ -296,7 +299,7 @@ a configuration flag. Better to know that before someone assumes a `bonded: true
 | "One frame per SRT message" (ADR 0001) | **Wrong, and corrected** by an amendment to that ADR: a frame spans about seven messages |
 | `latency_ms: 120` as the default | Confirmed — it is the library's live-mode default |
 | 100–200 ms transport target (decision 7) | Holds, but it is *negotiated* as the maximum of both ends' settings; the UI must show the negotiated value, not ours |
-| Never drop audio, `TLPKTDROP` unused (decision 6) | **Needs explicit work**: the default is *true* in live mode and the sender can auto-enable it. Disable at both ends, and assert `pktRcvDrop == 0` |
+| Never drop audio, `TLPKTDROP` unused (decision 6) | **Reversed by measurement.** Disabling it head-of-line blocks and kills a 64-channel link after ~2 s. It stays **on**; `pktRcvDrop` counts packets too late to play — zero on a healthy link |
 | Passphrase validation of 10..79 characters | Confirmed exactly against `srtcore/srt.h:200` |
 | Redundancy out of v1 | Confirmed, and the cost of revisiting it is now known: build-time gated, rendezvous-incompatible |
 | Public internet, both ends NAT'd, unattended (decision 5) | Rendezvous works but is a coordinated configuration; bonding would force one end to be reachable |
@@ -304,10 +307,10 @@ a configuration flag. Better to know that before someone assumes a `bonded: true
 
 ## Unresolved: what must be measured or read next
 
-1. **Late-arrival behaviour with `TLPKTDROP` disabled.** Decision 6 rests entirely on "the packet
-   still arrives, only later". The docs support the intent but never state it. **Measure it in
-   ticket 07**: starve a link deliberately and assert no frame is lost, the delay grows, and
-   `pktRcvDrop` stays at zero.
+1. ~~**Late-arrival behaviour with `TLPKTDROP` disabled.**~~ **Answered, and it killed the premise.**
+   A late packet is not delivered later — with `TLPKTDROP` off the receiver blocks, and a 64-channel
+   link stalls within ~2 s. `TLPKTDROP` stays on; `pktRcvDrop` is the loss counter to watch. Ticket 07
+   now measures the opposite: frames keep flowing under strain, and loss shows up in `pktRcvDrop`.
 2. ~~**AES-CTR cost at 148 Mbit/s on the target Pi.**~~ **Taken** — it is measured in the section
    above, and was measured again on 2026-09-17 with the same ~3.2 GB/s in 16 KB blocks, so a
    passphrase costs well under 1% of a core. The entry was left here after the measurement landed,

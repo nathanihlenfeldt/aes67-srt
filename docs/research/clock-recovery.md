@@ -482,7 +482,7 @@ hardware criterion) or across a *network* rather than the loopback interface —
 `scripts/measure-link-spread.sh`, new: two machines, one running `listen` and one running `send`, both
 using libsrt directly rather than this repository's transport, with the same options
 `src/transport/link.cpp` sets (live mode, message API, 120 ms latency both ways, 1316-byte payload cap,
-TLPKTDROP off) and one frame's worth of messages per millisecond — this appliance's real shape and rate.
+TLPKTDROP on) and one frame's worth of messages per millisecond — this appliance's real shape and rate.
 
 **This is the figure the section above twice calls decisive and never had**: what SRT delivers to a
 receiver, which is what a direct rate estimate would have to work against. Raspberry Pi 5 as the sender,

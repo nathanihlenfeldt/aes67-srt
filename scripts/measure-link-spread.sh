@@ -99,15 +99,15 @@ static void sleep_until(double target) {
  *   livemode + messageapi  what the appliance runs
  *   latency both ways      120 ms, the configured figure
  *   payload cap            1316 bytes, what a live-mode send will accept
- *   TLPKTDROP off          a late frame is delivered late, not dropped, so the
- *                          spread shows lateness instead of hiding it
+ *   TLPKTDROP on           matching the appliance: disabling it head-of-line
+ *                          blocks the receiver instead of showing lateness
  */
 static void configure(SRTSOCKET socket) {
   int live = SRTT_LIVE;
   int yes = 1;
   int latency = LATENCY_MS;
   int payload = PAYLOAD_CAP;
-  int drop = 0;
+  int drop = 1;
   srt_setsockopt(socket, 0, SRTO_TRANSTYPE, &live, sizeof(live));
   srt_setsockopt(socket, 0, SRTO_MESSAGEAPI, &yes, sizeof(yes));
   srt_setsockopt(socket, 0, SRTO_RCVLATENCY, &latency, sizeof(latency));

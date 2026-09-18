@@ -470,8 +470,9 @@ TEST_CASE(transport_carries_frames_both_ways_on_one_connection) {
     CHECK(reverse.front() == back);
   }
 
-  // The assertion the whole design rests on: TLPKTDROP is off, so nothing was
-  // discarded. If this ever fails, audio is being thrown away silently.
+  // TLPKTDROP is on, so a packet that missed its play time would be discarded
+  // rather than stalling the receiver. A healthy round trip drops none of them,
+  // so anything non-zero here is a link that is already too late.
   LinkStats stats;
   std::string stats_error;
   CHECK(listener.stats(&stats, &stats_error));
@@ -756,7 +757,9 @@ TEST_CASE(transport_takes_strain_as_delay_and_never_drops_audio) {
             << stats.packets_retransmitted << " total), dropped "
             << stats.packets_dropped << std::endl;
 
-  // The promise: everything arrives, and nothing was thrown away.
+  // The promise: everything arrives, and nothing was thrown away. TLPKTDROP is
+  // on, so a packet too late to play would be counted here rather than stalling
+  // the link; a loopback round trip delivers them all in time.
   CHECK_EQ(received.size(), static_cast<size_t>(frame_count));
   for (const std::vector<uint8_t>& taken : received) {
     CHECK(taken == frame);
