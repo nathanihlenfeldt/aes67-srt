@@ -179,6 +179,18 @@ const char* k_fallback_page = R"HTML(<!doctype html>
     <h2>Preflight</h2>
     <div id="checks"></div>
   </section>
+  <section class="card wide">
+    <h2>Service</h2>
+    <div class="controls">
+      <span id="enginestate" class="pill">?</span>
+      <button id="startengine" type="button">Start</button>
+      <button id="stopengine" type="button">Stop</button>
+      <button id="restartengine" type="button">Restart</button>
+      <span class="msg" id="enginemsg" role="status"></span>
+    </div>
+    <p class="msg">Stop and Start the audio without stopping this page. Restart applies a
+    saved configuration change.</p>
+  </section>
   <section class="card">
     <h2>Live</h2>
     <dl class="figures" id="figures"></dl>
@@ -201,6 +213,8 @@ const char* k_fallback_page = R"HTML(<!doctype html>
       <label>Peer<br><input id="c_peer" placeholder="host:port"></label>
       <label>Local port<br><input id="c_local_port" type="number"></label>
       <label>Latency (ms)<br><input id="c_latency_ms" type="number"></label>
+      <label>Codec<br><select id="c_codec_mode"><option value="pcm_l24">Lossless (PCM L24)</option><option value="opus">Compressed (Opus)</option></select></label>
+      <label>Bitrate/ch (Opus)<br><input id="c_bitrate" type="number" step="1000" min="6000" max="256000" value="128000"></label>
       <label>Frame (samples)<br><input id="c_period_frames" type="number" min="48"></label>
       <label>Blocks<br><input id="c_blocks" type="number" min="1" max="8"></label>
       <label>Passphrase<br><input id="c_passphrase" type="password"></label>
@@ -241,6 +255,10 @@ async function poll() {
     $('meta').textContent = 'v' + s.version + ' · ' + s.build + ' · ' + s.role + ' ' + s.mode + (s.peer ? ' → ' + s.peer : '');
     $('runpill').className = 'pill ' + (s.engine.running ? 'ok' : 'bad');
     $('runpill').textContent = s.engine.running ? 'running' : 'stopped';
+    const state = s.engine.state || (s.engine.running ? 'running' : 'stopped');
+    $('enginestate').className = 'pill ' + (state === 'running' ? 'ok' : (state === 'failed' ? 'bad' : ''));
+    $('enginestate').textContent = state;
+    if (s.engine.error) { $('enginemsg').className = 'msg bad'; $('enginemsg').textContent = s.engine.error; }
 
     const p = s.preflight || { ok: false, checks: [] };
     $('checks').innerHTML = p.checks.map((c) =>
@@ -299,6 +317,31 @@ $('trigger').onclick = async () => {
 };
 
 let currentConfig = null;
+async function engineAction(path, oktext) {
+  const m = $('enginemsg'); m.className = 'msg'; m.textContent = 'working…';
+  const r = await fetch(path, { method: 'POST' });
+  m.className = r.ok ? 'msg ok' : 'msg bad';
+  m.textContent = r.ok ? oktext : await r.text();
+  poll();
+}
+$('startengine').onclick = () => engineAction('/api/engine/start', 'started');
+$('stopengine').onclick = () => engineAction('/api/engine/stop', 'stopped');
+$('restartengine').onclick = () => engineAction('/api/engine/restart', 'restarting');
+// The mode control sets every block at once — the operator thinks "lossless or
+// compressed", not "block 3's payload type". The per-block selects stay for the
+// advanced case, and are what is saved.
+function applyCodecMode(codec) {
+  const bitrate = $('c_bitrate').value;
+  document.querySelectorAll('[data-codec]').forEach((sel) => { sel.value = codec; });
+  document.querySelectorAll('[data-bitrate]').forEach((inp) => { inp.value = bitrate; });
+  $('c_period_frames').value = codec === 'opus' ? 960 : 48;
+}
+$('c_codec_mode').onchange = () => applyCodecMode($('c_codec_mode').value);
+$('c_bitrate').onchange = () => {
+  const value = $('c_bitrate').value;
+  document.querySelectorAll('[data-bitrate]').forEach((inp) => { inp.value = value; });
+};
+
 async function loadConfig() {
   try {
     currentConfig = await (await fetch('/api/config')).json();
@@ -309,6 +352,11 @@ async function loadConfig() {
     $('c_passphrase').value = l.passphrase || '';
     $('c_period_frames').value = currentConfig.audio.period_frames;
     renderBlocks();
+    const blocks = currentConfig.blocks || [];
+    const allOpus = blocks.length > 0 &&
+                    blocks.every((b) => (b.codec || 'pcm_l24') === 'opus');
+    $('c_codec_mode').value = allOpus ? 'opus' : 'pcm_l24';
+    $('c_bitrate').value = (blocks[0] && blocks[0].bitrate_bps_per_channel) || 128000;
   } catch (e) { /* the status poll reports an unreachable appliance */ }
 }
 function renderBlocks() {
@@ -922,6 +970,42 @@ void ApiServer::register_routes() {
                 return;
               }
               reply_json(response, {{"ok", true}});
+            });
+
+  // ---- the engine's lifecycle (issue #33) --------------------------------
+  // Start, stop and restart of the audio from the page. Restart is what applies a
+  // saved configuration change, so the "restart to apply" message has somewhere
+  // to go. The process (and this page) stays up throughout.
+  const auto lifecycle = [this](httplib::Response& response, const char* action) {
+    if (service_ == nullptr) {
+      reply_text(response, 503, "no engine service on this build");
+      return;
+    }
+    std::string error;
+    if (std::string(action) == "stop") {
+      service_->stop();
+    } else if (std::string(action) == "start") {
+      if (!service_->start(&error)) {
+        reply_text(response, 400, error);
+        return;
+      }
+    } else if (!service_->restart(&error)) {
+      reply_text(response, 400, error);
+      return;
+    }
+    reply_json(response, {{"ok", true}, {"state", service_->state()}});
+  };
+  svr->Post("/api/engine/start",
+            [lifecycle](const httplib::Request&, httplib::Response& response) {
+              lifecycle(response, "start");
+            });
+  svr->Post("/api/engine/stop",
+            [lifecycle](const httplib::Request&, httplib::Response& response) {
+              lifecycle(response, "stop");
+            });
+  svr->Post("/api/engine/restart",
+            [lifecycle](const httplib::Request&, httplib::Response& response) {
+              lifecycle(response, "restart");
             });
 
   // ---- the UI ------------------------------------------------------------

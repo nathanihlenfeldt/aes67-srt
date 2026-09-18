@@ -101,6 +101,11 @@ void EngineService::worker() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     engine = engine_.get();
+    if (engine != nullptr) {
+      // The loops are about to run. A listener may still be waiting for a peer,
+      // but it is started, which is what "running" means here.
+      state_ = "running";
+    }
   }
   const int result = engine != nullptr ? engine->run() : 1;
 
