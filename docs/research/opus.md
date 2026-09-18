@@ -233,6 +233,31 @@ The 43% figure comes from the probe with a **tone**, and until the appliance's o
 on the RAVENNA device with programme material, the threaded number is unmeasured. That is the same
 hardware-session gap the clock module has; recorded here rather than claimed.
 
+## The real-audio numbers, on the RAVENNA device (2026-09-18)
+
+Taken on the Pi 5 with live programme material on `plughw:RAVENNA` (8 active channels at -15 to -27
+dBFS, tonal, ~390 Hz), all eight blocks Opus, 20 ms frames, Pi transmit → Mac receive:
+
+| | value |
+|---|---|
+| Pi CPU, 64 channels encode + decode | **22.6% of one core (0.23 cores)**, threaded; busiest threads 157/74/71/70 ticks, so the pool is really sharing the work |
+| wire rate | **1.22 Mbit/s** for this material |
+| frames | 0 refused, delay 80 ms |
+
+Two things this settles, and one it corrects:
+
+- **The appliance can do 64-channel Opus on a Pi with room to spare.** 0.23 of the 4 cores, on live
+  audio, without the encoders saturating any single core. Threading is what keeps it off one core.
+- **The rate is the *content's*, not the setting's.** The material is tonal, and Opus spent ~19
+  kbit/s per channel on it. White noise through the same codec path at the same setting reached
+  **129 kbit/s per channel**, so the encoder is not silently capped at a low rate.
+- **Corrected: `OPUS_SET_BITRATE` is clamped for a multistream block.** Asking for 128 kbit/s per
+  channel (1024 kbit/s for the block) and reading it back with `OPUS_GET_BITRATE` gives **576
+  kbit/s**, i.e. ~72 kbit/s per channel. The configuration's 6..510 kbit/s per-channel range is
+  therefore wider than the multistream encoder will honour, and VBR can still exceed the clamped
+  target on hard material. **The configuration validation should be narrowed to what Opus will take,
+  or the ceiling documented** — a follow-up, not done here.
+
 ## What this changes in the roadmap
 
 `docs/ROADMAP.md` said "Opus first. Royalty-free, and it is native at 48 kHz… 2.5–60 ms frames".
