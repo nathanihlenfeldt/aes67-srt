@@ -547,11 +547,17 @@ bool Config::validate(std::string* reason) const {
                               block.codec + "\"");
     }
     if (codec == "opus" && (block.bitrate_bps_per_channel < 6000 ||
-                            block.bitrate_bps_per_channel > 510000)) {
-      return fail(reason, path +
-                              "bitrate_bps_per_channel: expected 6000..510000 "
-                              "(Opus's per-channel range), got " +
-                              std::to_string(block.bitrate_bps_per_channel));
+                            block.bitrate_bps_per_channel > 256000)) {
+      // The ceiling is measured, not read: an 8-mono-stream multistream encoder
+      // does not reach targets above ~256 kbit/s per channel (384000 and 510000
+      // both clamped to ~261000 on the target), even though Opus's own per-stream
+      // maximum is higher. Accepting 510000 would be the configuration saying one
+      // thing and the encoder doing another, which this project refuses elsewhere.
+      return fail(reason,
+                  path +
+                      "bitrate_bps_per_channel: expected 6000..256000, the range "
+                      "an 8-stream Opus block reaches on the target; got " +
+                      std::to_string(block.bitrate_bps_per_channel));
     }
   }
 

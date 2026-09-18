@@ -251,12 +251,14 @@ Two things this settles, and one it corrects:
 - **The rate is the *content's*, not the setting's.** The material is tonal, and Opus spent ~19
   kbit/s per channel on it. White noise through the same codec path at the same setting reached
   **129 kbit/s per channel**, so the encoder is not silently capped at a low rate.
-- **Corrected: `OPUS_SET_BITRATE` is clamped for a multistream block.** Asking for 128 kbit/s per
-  channel (1024 kbit/s for the block) and reading it back with `OPUS_GET_BITRATE` gives **576
-  kbit/s**, i.e. ~72 kbit/s per channel. The configuration's 6..510 kbit/s per-channel range is
-  therefore wider than the multistream encoder will honour, and VBR can still exceed the clamped
-  target on hard material. **The configuration validation should be narrowed to what Opus will take,
-  or the ceiling documented** — a follow-up, not done here.
+- **`OPUS_SET_BITRATE` is honoured; `OPUS_GET_BITRATE` is not to be trusted for a multistream
+  encoder.** An earlier note here read a clamp out of `OPUS_GET_BITRATE`, which returns a constant
+  **576000** whatever is asked — even 48000 — so it reports nothing useful. Measuring the *achieved*
+  rate instead, on white noise, shows the setting working: 16k→13.7k, 32k→31.4k, 64k→64.8k,
+  128k→129.1k, 256k→257.1k bit/s per channel. Above that the encoder does not reach the target —
+  **384000 and 510000 both clamped to ~261000** — so the reachable ceiling for an 8-mono-stream block
+  is about **256 kbit/s per channel**. The accepted range was narrowed to **6000..256000** accordingly;
+  510000 was a number the configuration would accept and the encoder would not reach.
 
 ## What this changes in the roadmap
 

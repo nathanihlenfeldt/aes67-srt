@@ -33,6 +33,21 @@ std::vector<uint8_t> tone_pcm() {
   return bytes;
 }
 
+/** One frame of white noise: the hard case for VBR, so an honest test of a target.
+ */
+std::vector<uint8_t> noise_pcm() {
+  std::vector<float> samples(static_cast<size_t>(kFrames) * kChannels);
+  unsigned seed = 7;
+  for (float& sample : samples) {
+    seed = seed * 1103515245u + 12345u;
+    sample = 0.3f * (static_cast<float>((seed >> 16) & 0x7fff) / 16384.0f - 1.0f);
+  }
+  std::vector<uint8_t> bytes(static_cast<size_t>(kFrames) * kChannels * 3);
+  aes67_srt::audio::float_to_s24_3le(samples.data(), kFrames, kChannels,
+                                     bytes.data());
+  return bytes;
+}
+
 }  // namespace
 
 TEST_CASE(codec_opus_round_trips_a_block) {
@@ -101,6 +116,37 @@ TEST_CASE(codec_opus_round_trips_a_block) {
   // budget* rather than a shift the caller has to apply to the audio.
   CHECK(best > 0.99);
   CHECK(best_lag < 100);
+}
+
+TEST_CASE(codec_opus_achieved_rate_tracks_the_target) {
+  if (!aes67_srt::codec::opus_available()) {
+    std::cout << "    no libopus in this build: skipping the rate test"
+              << std::endl;
+    return;
+  }
+
+  // The configured bitrate is a *target*, and OPUS_GET_BITRATE cannot be trusted
+  // to report it for a multistream encoder (it returns a constant 576000 whatever
+  // is asked). What can be asserted is what an operator cares about: the achieved
+  // rate tracks the target, on hard material.
+  const std::vector<uint8_t> pcm = noise_pcm();
+  const int encoded_frames = 200;
+  for (const int target : {32000, 128000}) {
+    OpusBlock codec;
+    std::string error;
+    CHECK(codec.open(kChannels, kSampleRate, kFrames, target, &error));
+    size_t bytes = 0;
+    std::vector<uint8_t> packet;
+    for (int frame = 0; frame < encoded_frames; ++frame) {
+      CHECK(codec.encode(pcm.data(), kFrames, &packet, &error));
+      bytes += packet.size();
+    }
+    const double seconds =
+        static_cast<double>(encoded_frames) * kFrames / kSampleRate;
+    const double per_channel = bytes * 8.0 / seconds / kChannels;
+    CHECK(per_channel > target * 0.6);
+    CHECK(per_channel < target * 1.6);
+  }
 }
 
 TEST_CASE(codec_opus_refuses_a_frame_it_cannot_take) {

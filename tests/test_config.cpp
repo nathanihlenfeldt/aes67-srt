@@ -205,6 +205,62 @@ TEST_CASE(config_refuses_a_block_that_is_not_eight_channels) {
   CHECK(names(refusal(document), "blocks"));
 }
 
+TEST_CASE(config_refuses_an_opus_bitrate_the_encoder_cannot_reach) {
+  // The measured ceiling for an 8-mono-stream block is ~256 kbit/s per channel;
+  // 510000 is a number the encoder does not reach, so accepting it would be the
+  // configuration saying one thing and the encoder doing another.
+  json document = sample_document();
+  document["audio"]["period_frames"] = 960;  // an Opus frame, not 1 ms
+  json blocks = json::array();
+  for (int index = 0; index < 8; ++index) {
+    json channels = json::array();
+    for (int channel = 0; channel < 8; ++channel) {
+      channels.push_back(index * 8 + channel);
+    }
+    blocks.push_back({{"index", index},
+                      {"channels", channels},
+                      {"gain_db", 0.0},
+                      {"mute", false},
+                      {"codec", "opus"},
+                      {"bitrate_bps_per_channel", 510000}});
+  }
+  document["blocks"] = blocks;
+  const std::string reason = refusal(document);
+  CHECK(names(reason, "blocks[0].bitrate_bps_per_channel"));
+  CHECK(reason.find("256000") != std::string::npos);
+
+  // A reachable rate is accepted, and the same document parses.
+  for (json& block : document["blocks"]) {
+    block["bitrate_bps_per_channel"] = 128000;
+  }
+  aes67_srt::Config config;
+  std::string error;
+  CHECK(aes67_srt::parse_config(document.dump(), &config, &error));
+}
+
+TEST_CASE(config_refuses_an_opus_block_with_a_one_millisecond_period) {
+  // Opus cannot take a 1 ms frame, so the period *is* the codec frame in codec
+  // mode. A 48-frame period with an Opus block is a configuration that would not
+  // work, and it is refused by name.
+  json document = sample_document();
+  document["audio"]["period_frames"] = 48;
+  json blocks = json::array();
+  for (int index = 0; index < 8; ++index) {
+    json channels = json::array();
+    for (int channel = 0; channel < 8; ++channel) {
+      channels.push_back(index * 8 + channel);
+    }
+    blocks.push_back({{"index", index},
+                      {"channels", channels},
+                      {"gain_db", 0.0},
+                      {"mute", false},
+                      {"codec", "opus"},
+                      {"bitrate_bps_per_channel", 128000}});
+  }
+  document["blocks"] = blocks;
+  CHECK(names(refusal(document), "audio.period_frames"));
+}
+
 TEST_CASE(config_refuses_a_delay_that_would_advance_audio) {
   json document = sample_document();
   document["egress"]["delay_ms"] = -10.0;
