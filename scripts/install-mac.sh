@@ -25,6 +25,8 @@ DEVICE="BlackHole 64ch"
 ROLE="rx"
 PEER=""
 PASSPHRASE=""
+LOCAL_PORT=""
+HTTP_PORT=""
 
 usage() {
   cat <<'USAGE'
@@ -35,6 +37,8 @@ usage: install-mac.sh [options]
   --role <rx|tx|duplex> which direction this end runs (default rx: appliance -> Mac)
   --peer <host:port>    the appliance's SRT address (default: set it in the config)
   --passphrase <text>   the shared SRT passphrase (default: set it in the config)
+  --local-port <port>   this end's SRT port (default 9100)
+  --http-port <port>    the control surface's port (default 8082)
   -h, --help            this message
 
 Installs to ~/Library/Application Support/aes67-srt and loads a LaunchAgent.
@@ -49,6 +53,8 @@ while [[ $# -gt 0 ]]; do
     --role) ROLE="$2"; shift 2 ;;
     --peer) PEER="$2"; shift 2 ;;
     --passphrase) PASSPHRASE="$2"; shift 2 ;;
+    --local-port) LOCAL_PORT="$2"; shift 2 ;;
+    --http-port) HTTP_PORT="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "install-mac: unknown option: $1" >&2; exit 2 ;;
   esac
@@ -79,11 +85,14 @@ install -m 0644 "${REPO_ROOT}/config/aes67-srt-mac.conf" "${CONFIG}"
 # Prefill the config when the caller gave the values. python3 is what renders it;
 # without it the guide's manual edit is the fallback rather than a half-edited
 # document this script guessed at.
-if [[ -n "${PEER}" || -n "${PASSPHRASE}" || "${DEVICE}" != "BlackHole 64ch" || "${ROLE}" != "rx" ]]; then
+if [[ -n "${PEER}" || -n "${PASSPHRASE}" || -n "${LOCAL_PORT}" ||
+      -n "${HTTP_PORT}" || "${DEVICE}" != "BlackHole 64ch" ||
+      "${ROLE}" != "rx" ]]; then
   if ! command -v python3 >/dev/null 2>&1; then
     echo "install-mac: python3 is needed to prefill the config; edit ${CONFIG} by hand instead" >&2
   else
-    PEER="${PEER}" PASSPHRASE="${PASSPHRASE}" DEVICE="${DEVICE}" ROLE="${ROLE}" CONFIG="${CONFIG}" \
+    PEER="${PEER}" PASSPHRASE="${PASSPHRASE}" DEVICE="${DEVICE}" ROLE="${ROLE}" \
+      LOCAL_PORT="${LOCAL_PORT}" HTTP_PORT="${HTTP_PORT}" CONFIG="${CONFIG}" \
       python3 - <<'PY'
 import json, os
 path = os.environ["CONFIG"]
@@ -93,6 +102,10 @@ if os.environ["PEER"]:
     config["link"]["peer"] = os.environ["PEER"]
 if os.environ["PASSPHRASE"]:
     config["link"]["passphrase"] = os.environ["PASSPHRASE"]
+if os.environ["LOCAL_PORT"]:
+    config["link"]["local_port"] = int(os.environ["LOCAL_PORT"])
+if os.environ["HTTP_PORT"]:
+    config["http_port"] = int(os.environ["HTTP_PORT"])
 config["audio"]["device"] = os.environ["DEVICE"]
 config["link"]["role"] = os.environ["ROLE"]
 with open(path, "w") as handle:
