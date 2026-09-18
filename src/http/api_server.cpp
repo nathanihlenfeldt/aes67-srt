@@ -307,18 +307,39 @@ async function loadConfig() {
     $('c_latency_ms').value = l.latency_ms; $('c_blocks').value = l.blocks;
     $('c_passphrase').value = l.passphrase || '';
     $('c_period_frames').value = currentConfig.audio.period_frames;
-    $('blocks').innerHTML = (currentConfig.blocks || []).map((b, i) =>
-      '<div class="row"><span class="name">block ' + b.index + '</span>' +
-      '<span class="detail">channels ' + (b.channels || []).join(', ') + '</span>' +
-      '<span class="detail"><label>codec <select data-codec="' + i + '">' +
-        ['pcm_l24', 'pcm_l16', 'opus'].map((c) =>
-          '<option' + ((b.codec || 'pcm_l24') === c ? ' selected' : '') + '>' + c + '</option>').join('') +
-      '</select></label> ' +
-      '<label>bitrate/ch <input type="number" step="1000" min="6000" max="256000" data-bitrate="' + i + '" value="' + (b.bitrate_bps_per_channel || 128000) + '" title="Opus only; 6000..256000 bit/s per channel"></label> ' +
-      '<label>gain dB <input type="number" step="0.1" data-gain="' + i + '" value="' + b.gain_db + '"></label> ' +
-      '<label><input type="checkbox" data-mute="' + i + '"' + (b.mute ? ' checked' : '') + '> mute</label></span></div>').join('');
+    renderBlocks();
   } catch (e) { /* the status poll reports an unreachable appliance */ }
 }
+function renderBlocks() {
+  $('blocks').innerHTML = (currentConfig.blocks || []).map((b, i) =>
+    '<div class="row"><span class="name">block ' + b.index + '</span>' +
+    '<span class="detail"><label>channels <input data-channels="' + i + '" value="' +
+      (b.channels || []).join(',') + '" size="20" title="comma-separated device channels, eight of them"></label></span>' +
+    '<span class="detail"><label>codec <select data-codec="' + i + '">' +
+      ['pcm_l24', 'pcm_l16', 'opus'].map((c) =>
+        '<option' + ((b.codec || 'pcm_l24') === c ? ' selected' : '') + '>' + c + '</option>').join('') +
+    '</select></label> ' +
+    '<label>bitrate/ch <input type="number" step="1000" min="6000" max="256000" data-bitrate="' + i + '" value="' + (b.bitrate_bps_per_channel || 128000) + '" title="Opus only; 6000..256000 bit/s per channel"></label> ' +
+    '<label>gain dB <input type="number" step="0.1" data-gain="' + i + '" value="' + b.gain_db + '"></label> ' +
+    '<label><input type="checkbox" data-mute="' + i + '"' + (b.mute ? ' checked' : '') + '> mute</label></span></div>').join('');
+}
+// Changing the block count regenerates the array rather than leaving a block list
+// that no longer covers the channels, which validation would refuse without saying
+// how to fix it. Existing blocks are kept; new ones get the conventional mapping.
+$('c_blocks').onchange = () => {
+  if (!currentConfig) return;
+  const wanted = parseInt($('c_blocks').value, 10);
+  const old = currentConfig.blocks || [];
+  const next = [];
+  for (let i = 0; i < wanted; i++) {
+    if (old[i]) { next.push(old[i]); continue; }
+    const channels = [];
+    for (let c = 0; c < 8; c++) channels.push(i * 8 + c);
+    next.push({ index: i, channels, gain_db: 0.0, mute: false, codec: 'pcm_l24', bitrate_bps_per_channel: 128000 });
+  }
+  currentConfig.blocks = next;
+  renderBlocks();
+};
 $('savelink').onclick = async () => {
   if (!currentConfig) await loadConfig();
   if (!currentConfig) return;
@@ -336,10 +357,12 @@ $('savelink').onclick = async () => {
     const mute = document.querySelector('[data-mute="' + i + '"]');
     const codec = document.querySelector('[data-codec="' + i + '"]');
     const bitrate = document.querySelector('[data-bitrate="' + i + '"]');
+    const channels = document.querySelector('[data-channels="' + i + '"]');
     if (gain) b.gain_db = parseFloat(gain.value);
     if (mute) b.mute = mute.checked;
     if (codec) b.codec = codec.value;
     if (bitrate) b.bitrate_bps_per_channel = parseInt(bitrate.value, 10);
+    if (channels) b.channels = channels.value.split(',').map((x) => parseInt(x.trim(), 10)).filter((x) => !isNaN(x));
   });
   const r = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentConfig) });
   const m = $('configmsg');
