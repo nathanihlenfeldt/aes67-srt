@@ -200,6 +200,7 @@ const char* k_fallback_page = R"HTML(<!doctype html>
       <label>Peer<br><input id="c_peer" placeholder="host:port"></label>
       <label>Local port<br><input id="c_local_port" type="number"></label>
       <label>Latency (ms)<br><input id="c_latency_ms" type="number"></label>
+      <label>Frame (samples)<br><input id="c_period_frames" type="number" min="48"></label>
       <label>Blocks<br><input id="c_blocks" type="number" min="1" max="8"></label>
       <label>Passphrase<br><input id="c_passphrase" type="password"></label>
       <div class="actions">
@@ -305,10 +306,16 @@ async function loadConfig() {
     $('c_peer').value = l.peer || ''; $('c_local_port').value = l.local_port;
     $('c_latency_ms').value = l.latency_ms; $('c_blocks').value = l.blocks;
     $('c_passphrase').value = l.passphrase || '';
+    $('c_period_frames').value = currentConfig.audio.period_frames;
     $('blocks').innerHTML = (currentConfig.blocks || []).map((b, i) =>
       '<div class="row"><span class="name">block ' + b.index + '</span>' +
       '<span class="detail">channels ' + (b.channels || []).join(', ') + '</span>' +
-      '<span class="detail"><label>gain dB <input type="number" step="0.1" data-gain="' + i + '" value="' + b.gain_db + '"></label> ' +
+      '<span class="detail"><label>codec <select data-codec="' + i + '">' +
+        ['pcm_l24', 'pcm_l16', 'opus'].map((c) =>
+          '<option' + ((b.codec || 'pcm_l24') === c ? ' selected' : '') + '>' + c + '</option>').join('') +
+      '</select></label> ' +
+      '<label>bitrate/ch <input type="number" step="1000" min="6000" max="256000" data-bitrate="' + i + '" value="' + (b.bitrate_bps_per_channel || 128000) + '" title="Opus only; 6000..256000 bit/s per channel"></label> ' +
+      '<label>gain dB <input type="number" step="0.1" data-gain="' + i + '" value="' + b.gain_db + '"></label> ' +
       '<label><input type="checkbox" data-mute="' + i + '"' + (b.mute ? ' checked' : '') + '> mute</label></span></div>').join('');
   } catch (e) { /* the status poll reports an unreachable appliance */ }
 }
@@ -323,11 +330,16 @@ $('savelink').onclick = async () => {
   currentConfig.link.latency_ms = n('c_latency_ms');
   currentConfig.link.blocks = n('c_blocks');
   currentConfig.link.passphrase = $('c_passphrase').value;
+  currentConfig.audio.period_frames = n('c_period_frames');
   (currentConfig.blocks || []).forEach((b, i) => {
     const gain = document.querySelector('[data-gain="' + i + '"]');
     const mute = document.querySelector('[data-mute="' + i + '"]');
+    const codec = document.querySelector('[data-codec="' + i + '"]');
+    const bitrate = document.querySelector('[data-bitrate="' + i + '"]');
     if (gain) b.gain_db = parseFloat(gain.value);
     if (mute) b.mute = mute.checked;
+    if (codec) b.codec = codec.value;
+    if (bitrate) b.bitrate_bps_per_channel = parseInt(bitrate.value, 10);
   });
   const r = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentConfig) });
   const m = $('configmsg');
