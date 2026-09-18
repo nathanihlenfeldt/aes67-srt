@@ -557,22 +557,27 @@ handoff's "costs nothing extra": it costs a device.
 What the bench *can* still measure is throughput, delivery, the receive path and the transport's
 behaviour, and that is what these runs were for. It cannot measure the clock.
 
-## A lost frame starves the playout, 2026-09-18 (deferred, issue #20)
+## A lost frame starved the playout, and the fix, 2026-09-18 (issue #20)
 
-Measured on the Pi → Mac path at 64 channels with the studio Mac on Wi-Fi, and it is a *playout* fault
-rather than a transport one. The receiver starts healthy — `delay 111 ms`, 11,609 frames received, 0
-refused — then one loss burst (SRT dropped 3,113 packets as too late) leaves a hole in the sender's
-sample timeline. `PlayoutBuffer::take` refuses while `head_ >= contiguous_end_`
-(`src/clock/playout_buffer.cpp:168`), and `advance_contiguous()` stops at the hole, so the head never
-crosses it: `delay` falls to 0 and `silence_periods` climbs at ~1000/s for ever, while
-`frames_received` keeps advancing and the link keeps delivering 77 Mbit/s. The head only jumps when an
-arrival is a whole buffer capacity ahead, so **a hole smaller than the capacity is never skipped**.
+Measured on the Pi → Mac path at 64 channels with the studio Mac on Wi-Fi, and it was a *playout* fault
+rather than a transport one. The receiver started healthy — `delay 111 ms`, 11,609 frames received, 0
+refused — then one loss burst (SRT dropped 3,113 packets as too late) left a hole in the sender's
+sample timeline. `PlayoutBuffer::take` refused while `head_ >= contiguous_end_`, and
+`advance_contiguous()` stopped at the hole, so the head never crossed it: `delay` fell to 0 and
+`silence_periods` climbed at ~1000/s for ever, while `frames_received` kept advancing and the link kept
+delivering 77 Mbit/s. The head only jumped when an arrival was a whole buffer capacity ahead, so **a
+hole smaller than the capacity was never skipped**.
 
-**A lossless link never makes a hole, so this does not appear on localhost or a wired path** — which is
-why it was deferred (issue #20) rather than fixed in the same session. The fix is to let the playout
-cross a hole it can prove is permanent (a later period already held means SRT, which delivers in
-order, will never fill it): advance the head, play silence for the lost periods, count them. That is
-forward-only and consistent with ADR 0003; it needs an ADR 0003 note and tests for a hole mid-stream
-and at the buffer edge. It matters because an unpredictable internet is an explicit design assumption,
-and today one hole silences the receiver permanently.
+**Fixed.** The buffer now crosses a hole it can prove is permanent: a period held *beyond* the gap
+means SRT — which delivers in order — will never fill it, so the head steps over one period per `take`,
+reported as an underrun so the caller plays silence for it, and counted in `frames_concealed`. The gap
+is concealed at real time rather than skipped, which keeps A/V alignment, and it is forward-only and
+consistent with ADR 0003. A hole with nothing beyond it is still waited for, because a retransmit
+could yet close it; only a hole with audio beyond it is provably dead. The count is published through
+the engine status (`frames_concealed`) so the loss is visible rather than silent.
+
+A lossless link never made a hole, which is why the fault appeared only on the lossy Wi-Fi bench and
+why the fix carries its own tests (`clock_a_hole_with_audio_beyond_it_is_crossed_as_silence`,
+`clock_a_hole_with_nothing_beyond_it_is_waited_for`) rather than leaning on a bench that cannot
+reproduce it.
 

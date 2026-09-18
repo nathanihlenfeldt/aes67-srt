@@ -386,48 +386,62 @@ TEST_CASE(clock_every_period_comes_back_byte_for_byte) {
   }
 }
 
-TEST_CASE(clock_a_hole_is_waited_for_and_never_filled_with_silence) {
-  // A gap in the sender's stream. Playing through it would be inventing audio and
-  // skipping it would be losing audio, so the buffer does neither: the head stops
-  // at the last period it can play and waits, which is the right default for a
-  // hole a retransmit may yet close.
+TEST_CASE(clock_a_hole_with_nothing_beyond_it_is_waited_for) {
+  // A gap that may still close is waited for: nothing is held beyond it, so a
+  // retransmit could yet fill it, and playing through would be inventing audio.
   const AudioFormat format = sim_format();
   PlayoutBuffer buffer(500, format);
   std::vector<uint8_t> period = make_period(format, 0);
   uint64_t position = 0;
 
   CHECK(buffer.push(0, period.data(), period.size()) == PushStatus::stored);
-  period = make_period(format, 96);
-  CHECK(buffer.push(96, period.data(), period.size()) == PushStatus::stored);
-
-  // Position 48 has not arrived, so only 0 is playable: the level is the
-  // contiguous run, not the highest position held.
-  CHECK_EQ(buffer.held_frames(), 48u);
-  CHECK_NEAR(buffer.level_ms(), 1.0, 1e-9);
   CHECK(buffer.take(period.data(), &position));
   CHECK_EQ(position, 0u);
   CHECK_EQ(buffer.head_position(), 48u);
-  CHECK_EQ(buffer.underruns(), 0u);
 
-  // The device asks again, and there is still nothing at the head.
-  CHECK_EQ(buffer.held_frames(), 0u);
+  // Nothing at the head and nothing beyond it: wait, and do not move the head.
   CHECK(!buffer.take(period.data(), &position));
   CHECK_EQ(buffer.underruns(), 1u);
   CHECK_EQ(buffer.head_position(), 48u);
+  CHECK_EQ(buffer.frames_concealed(), 0u);
 
-  // It arrives, the run closes up, and both periods play in order. Nothing was
-  // lost to the wait and nothing was played out of order.
+  // It arrives, and it plays in order with nothing concealed.
   period = make_period(format, 48);
   CHECK(buffer.push(48, period.data(), period.size()) == PushStatus::stored);
-  CHECK_EQ(buffer.held_frames(), 96u);
-  CHECK_NEAR(buffer.level_ms(), 2.0, 1e-9);
   CHECK(buffer.take(period.data(), &position));
   CHECK_EQ(position, 48u);
+  CHECK_EQ(buffer.frames_concealed(), 0u);
+  CHECK_EQ(buffer.frames_played(), 96u);
+}
+
+TEST_CASE(clock_a_hole_with_audio_beyond_it_is_crossed_as_silence) {
+  // Once a later period is held the gap can never be filled — SRT delivers in
+  // order — so the head crosses it at real time, one period of silence per take,
+  // rather than stalling at it for ever. This is the failure that used to silence
+  // the receiver permanently on one lost frame (issue #20).
+  const AudioFormat format = sim_format();
+  PlayoutBuffer buffer(500, format);
+  std::vector<uint8_t> period = make_period(format, 0);
+  uint64_t position = 0;
+
+  CHECK(buffer.push(0, period.data(), period.size()) == PushStatus::stored);
+  CHECK(buffer.push(96, period.data(), period.size()) == PushStatus::stored);
+
+  CHECK(buffer.take(period.data(), &position));
+  CHECK_EQ(position, 0u);
+
+  // At the hole with 96 held beyond it: one period of silence, and the head
+  // steps over exactly one period — not a jump that skips the gap in time.
+  CHECK(!buffer.take(period.data(), &position));
+  CHECK_EQ(buffer.frames_concealed(), 48u);
+  CHECK_EQ(buffer.head_position(), 96u);
+
+  // The held period then plays, in its proper place.
   CHECK(buffer.take(period.data(), &position));
   CHECK_EQ(position, 96u);
-  CHECK_EQ(buffer.frames_pushed(), 144u);
-  CHECK_EQ(buffer.frames_played(), 144u);
+  CHECK_EQ(buffer.frames_played(), 96u);
   CHECK_EQ(buffer.frames_dropped(), 0u);
+  CHECK_EQ(buffer.frames_late(), 0u);
 }
 
 TEST_CASE(clock_an_arrival_it_cannot_place_is_refused_and_counted) {

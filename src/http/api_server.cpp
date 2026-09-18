@@ -255,6 +255,7 @@ async function poll() {
       ['frames sent', e.frames_sent],
       ['frames received', e.frames_received],
       ['frames refused', e.frames_refused],
+      ['frames concealed', e.frames_concealed],
       ['silence periods', e.silence_periods]
     ];
     if (s.link && s.link.available) {
@@ -483,6 +484,7 @@ nlohmann::json ApiServer::build_status() {
   engine["frames_sent"] = status.frames_sent;
   engine["frames_received"] = status.frames_received;
   engine["frames_refused"] = status.frames_refused;
+  engine["frames_concealed"] = status.frames_concealed;
   engine["silence_periods"] = status.silence_periods;
   engine["delay_ms"] = status.delay_ms;
   engine["delay_fraction"] = status.delay_fraction;

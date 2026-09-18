@@ -86,12 +86,14 @@ const char* to_string(PushStatus status);
  * the module that serves it, and this class will want a snapshot then rather
  * than a lock-free redesign — it is not made safe by an atomic here.
  *
- * **Known limit, deliberately not solved here.** A gap in the sender's stream
- * that is never filled stalls the head at the last contiguous period: the buffer
- * waits rather than guessing, which is the right default for a hole that a
- * retransmit may yet close. Timing out and resyncing past a gap is a policy with
- * a number attached, and it belongs to the increment that owns the level — the
- * ratio control — rather than to the store.
+ * **A hole in the sender's stream, and how the head crosses it.** A gap that a
+ * retransmit may yet close must be waited for, not guessed at. But once a *later*
+ * period is held, the gap can never be filled: SRT delivers in order, so a period
+ * after one that arrived will not arrive later. The head then crosses the hole at
+ * real time — one period per `take`, each reported as an underrun so the caller
+ * plays silence for it, and counted as concealed — rather than stalling at it for
+ * ever. That is what a single lost frame used to do: silence the receiver
+ * permanently (issue #20).
  */
 class PlayoutBuffer {
  public:
@@ -166,6 +168,15 @@ class PlayoutBuffer {
   /** Frames refused because the head had already passed their position. */
   uint64_t frames_late() const { return late_; }
 
+  /**
+   * Frames the head crossed as a proven-permanent hole, played as silence.
+   *
+   * Distinct from `frames_dropped`: an overrun surrenders audio the buffer held,
+   * while this is audio that never arrived and could never arrive once a later
+   * period did. Both are loss; only one was ever in our hands.
+   */
+  uint64_t frames_concealed() const { return concealed_; }
+
   /** Arrivals refused as duplicates, off a period boundary, or malformed. */
   uint64_t arrivals_refused() const { return refused_; }
 
@@ -181,6 +192,13 @@ class PlayoutBuffer {
 
   /** Extend the contiguous run through every period now held in sequence. */
   void advance_contiguous();
+
+  /**
+   * The first held position at or after |position|, or k_empty if none is held
+   * within the window. Used to prove a hole permanent: a held period beyond it
+   * means the gap can never be filled.
+   */
+  uint64_t next_held_at_or_after(uint64_t position) const;
 
   /** Frames held anywhere in the window below |position|: what moving the head
    *  to |position| would strand. */
@@ -215,6 +233,7 @@ class PlayoutBuffer {
   uint64_t late_ = 0;
   uint64_t refused_ = 0;
   uint64_t underruns_ = 0;
+  uint64_t concealed_ = 0;
 };
 
 }  // namespace aes67_srt::clock

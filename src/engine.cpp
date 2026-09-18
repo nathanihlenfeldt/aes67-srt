@@ -657,6 +657,9 @@ bool Engine::play_one_period(std::string* error) {
   published_delay_fraction_.store(playout_->level_fraction());
   published_clock_offset_ppm_.store(control_.offset_ppm());
   published_clock_ratio_.store(control_.ratio());
+  // Frames the playout crossed as a proven-permanent hole (issue #20). Published
+  // here, on the loop's own thread, because the buffer belongs to this thread.
+  published_concealed_.store(playout_->frames_concealed());
 
   return write_period_to_device(error);
 }
@@ -777,6 +780,10 @@ uint64_t Engine::silence_periods() const {
   return silence_periods_.load();
 }
 
+uint64_t Engine::frames_concealed() const {
+  return published_concealed_.load();
+}
+
 EngineStatus Engine::status() {
   EngineStatus snapshot;
   snapshot.running = running_.load();
@@ -785,6 +792,7 @@ EngineStatus Engine::status() {
   snapshot.frames_received = frames_received_.load();
   snapshot.frames_refused = frames_refused_.load();
   snapshot.silence_periods = silence_periods_.load();
+  snapshot.frames_concealed = published_concealed_.load();
   snapshot.delay_ms = published_delay_ms_.load();
   snapshot.delay_fraction = published_delay_fraction_.load();
   snapshot.egress_delay_ms = published_egress_delay_ms_.load();

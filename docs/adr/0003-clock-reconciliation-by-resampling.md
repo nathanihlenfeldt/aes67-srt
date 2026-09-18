@@ -73,3 +73,17 @@ this is a decision that could have gone the other way, and the measurement is wh
   corrections — a cheaper design, a different host — that question returns with it.
 - A quality-versus-CPU measurement of the available converters belongs to the clock module's
   implementation, not to this decision.
+
+## Amendment, 2026-09-18: loss is concealed forward, never corrected backward
+
+The decision above is about *clock* differences between two healthy streams. It says nothing about a
+period that never arrives at all, and the playout's first answer to that — wait at the gap — turned
+out to be a permanent silence: once a later period is held, SRT (which delivers in order) will never
+fill the hole, so the head stalled at it for ever (`issue #20`, measured on a lossy link).
+
+**The rule this adds: a hole is crossed only when it can be proven permanent — a period held beyond
+it — and it is crossed forward, one period of silence per take, counted.** This is consistent with the
+"never seek back" quality rule: the head only ever moves forward, nothing is invented, and the loss is
+reported (`frames_concealed`) rather than hidden. A gap with nothing beyond it is still waited for,
+because a retransmit may yet close it. The clock's rate correction is untouched; this is loss
+tolerance, not rate correction.

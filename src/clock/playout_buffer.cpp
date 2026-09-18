@@ -165,10 +165,31 @@ bool PlayoutBuffer::take(uint8_t* period, uint64_t* sample_position) {
   if (period == nullptr) {
     return false;  // a caller bug rather than an underrun; see the header
   }
-  if (!primed_ || head_ >= contiguous_end_) {
-    // Nothing can be played without inventing it, so nothing is played and the
-    // head does not move. A device has to be fed either way, and what to feed it
-    // instead is the caller's decision rather than this one's.
+  if (!primed_) {
+    ++underruns_;
+    return false;
+  }
+
+  if (head_ >= contiguous_end_) {
+    // The head has reached a hole. If a period is held *beyond* it, the hole can
+    // never be filled — SRT delivers in order, so a period after one that arrived
+    // will not arrive later. Cross one period of it and report an underrun, so
+    // the caller plays silence for it and calls again: the gap is concealed at
+    // real time rather than skipped, which keeps A/V alignment. Without this a
+    // single lost frame stalled the head at the hole for ever (issue #20).
+    if (next_held_at_or_after(head_) == k_empty) {
+      // Nothing beyond: a genuine underrun, waiting for audio that may still come.
+      ++underruns_;
+      return false;
+    }
+    head_ += period_frames_;
+    concealed_ += period_frames_;
+    contiguous_end_ = head_;
+    advance_contiguous();
+    // Always report this take as an underrun: the period crossed was silence,
+    // and the caller must play exactly one period for it before the held audio
+    // is reached. Falling through to play would advance the head by two periods
+    // in one take and skip the gap in time rather than conceal it.
     ++underruns_;
     return false;
   }
@@ -184,6 +205,17 @@ bool PlayoutBuffer::take(uint8_t* period, uint64_t* sample_position) {
   head_ += period_frames_;
   played_ += period_frames_;
   return true;
+}
+
+uint64_t PlayoutBuffer::next_held_at_or_after(uint64_t position) const {
+  const uint64_t end = head_ + capacity_frames();
+  for (uint64_t candidate = position; candidate < end;
+       candidate += period_frames_) {
+    if (positions_[slot_of(candidate)] == candidate) {
+      return candidate;
+    }
+  }
+  return k_empty;
 }
 
 void PlayoutBuffer::advance_contiguous() {

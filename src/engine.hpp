@@ -40,6 +40,11 @@ struct EngineStatus {
   uint64_t frames_received = 0;
   uint64_t frames_refused = 0;
   uint64_t silence_periods = 0;
+  /**
+   * Frames the playout crossed as a proven-permanent hole, played as silence
+   * (issue #20). Loss the sender could not deliver, distinct from the overrun.
+   */
+  uint64_t frames_concealed = 0;
   /** The clock's playout level, in milliseconds — the delay figure (ticket 12). */
   double delay_ms = 0.0;
   double delay_fraction = 0.0;
@@ -257,6 +262,9 @@ class Engine {
   /** Periods the device was fed silence for because nothing could be played. */
   uint64_t silence_periods() const;
 
+  /** Frames the playout crossed as a proven-permanent hole (issue #20). */
+  uint64_t frames_concealed() const;
+
   /**
    * Everything the control surface shows, as one thread-safe snapshot.
    *
@@ -389,6 +397,8 @@ class Engine {
   std::atomic<double> published_egress_delay_ms_{0.0};
   std::atomic<double> published_clock_offset_ppm_{0.0};
   std::atomic<double> published_clock_ratio_{1.0};
+  /** Frames concealed as a permanent hole, published by the receive loop. */
+  std::atomic<uint64_t> published_concealed_{0};
 
   /**
    * Requests posted by the control surface's thread, consumed by the receive loop.
