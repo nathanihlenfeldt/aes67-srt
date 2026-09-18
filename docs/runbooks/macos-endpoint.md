@@ -8,6 +8,9 @@ What has been proved, and what has not, is in `docs/research/macos-endpoint.md` 
 
 ## What you need
 
+- **Wired Ethernet on the Mac.** Not Wi-Fi: 64 channels is ~74 Mbit/s per direction and Wi-Fi drops
+  the bursts SRT then has to recover, which the operator hears as loss. The same goes for the site
+  end — this is a level of the stack the appliance cannot fix for you.
 - **The Mac**: the endpoint built (`build/aes67-srt-mac`), and **BlackHole 64ch** installed. After
   installing BlackHole, `coreaudiod` must be restarted or the device is invisible:
   ```

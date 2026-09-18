@@ -14,6 +14,11 @@ signal to align against (ticket 12). **The control surface — the REST API and 
 to come**, and so is a two-appliance WAN figure. The plan, the decisions and the open questions are
 in the specification, and the measured facts are in `docs/research/`.
 
+**The link it expects:** wired Ethernet at both ends and a low-jitter internet connection — 64
+channels is ~74 Mbit/s per direction, and the round trip plus its jitter has to fit inside the
+transport delay. Wi-Fi, 5G/LTE and consumer satellite (Starlink) are out of scope for v1; that is
+what phase-2 Opus is for. See `docs/spec/0001-aes67-srt.md` → *The link it expects*.
+
 ## Where things are
 
 - **`docs/spec/0001-aes67-srt.md`** — the specification. Start here. The frozen
