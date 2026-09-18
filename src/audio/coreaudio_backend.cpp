@@ -131,18 +131,27 @@ AudioDeviceID find_device(const std::string& name, bool input, std::string* erro
   return kAudioObjectUnknown;
 }
 
-AudioStreamBasicDescription float_format(const AudioFormat& format) {
+/**
+ * The client stream format for an AudioUnit on |channel_count| channels.
+ *
+ * **The count is the device's, not ours.** A HAL device exposes a fixed channel
+ * count — BlackHole is 64 — and an AudioUnit whose client format disagrees does not
+ * error: it interleaves our samples into the wrong stride, which arrives as
+ * time-shifted, screechy audio rather than as a fault. So the units are opened at
+ * the device's count and the callbacks map our channels into it.
+ */
+AudioStreamBasicDescription float_format(const AudioFormat& format,
+                                         unsigned channel_count) {
   AudioStreamBasicDescription asbd{};
   asbd.mSampleRate = static_cast<Float64>(format.sample_rate);
   asbd.mFormatID = kAudioFormatLinearPCM;
-  // Interleaved float32, so the ring's layout and the device's are the same and
-  // the callback is a memcpy: `kAudioFormatFlagsNativeFloatPacked` without the
-  // non-interleaved flag.
+  // Interleaved float32: `kAudioFormatFlagsNativeFloatPacked` without the
+  // non-interleaved flag, so the callback is a memcpy when the counts agree.
   asbd.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
-  asbd.mChannelsPerFrame = format.channels;
+  asbd.mChannelsPerFrame = channel_count;
   asbd.mBitsPerChannel = 32;
   asbd.mFramesPerPacket = 1;
-  asbd.mBytesPerFrame = format.channels * sizeof(float);
+  asbd.mBytesPerFrame = channel_count * sizeof(float);
   asbd.mBytesPerPacket = asbd.mBytesPerFrame;
   return asbd;
 }
@@ -173,6 +182,13 @@ struct CoreAudioBackend::Impl {
   std::vector<uint8_t> input_bytes;
   size_t max_input_frames = 0;
 
+  /** The device's own channel counts, which the AudioUnits are opened at. */
+  unsigned output_device_channels = 0;
+  unsigned input_device_channels = 0;
+  /** Realtime scratch for mapping our channels into the device's, and back. */
+  std::vector<float> output_map_scratch;
+  std::vector<float> input_map_scratch;
+
   std::atomic<unsigned> overruns{0};
   std::atomic<unsigned> underruns{0};
 
@@ -184,11 +200,34 @@ struct CoreAudioBackend::Impl {
       return noErr;
     }
     float* out = static_cast<float*>(io->mBuffers[0].mData);
-    const size_t got = self->to_device.read(out, frames);
+    const unsigned channels = self->format.channels;
+    const unsigned device_channels = self->output_device_channels;
+    if (device_channels == channels) {
+      const size_t got = self->to_device.read(out, frames);
+      if (got < frames) {
+        std::memset(out + got * channels, 0,
+                    (frames - got) * channels * sizeof(float));
+        self->underruns.fetch_add(1);
+      }
+      return noErr;
+    }
+    // The device carries more channels than we do (or fewer): read our frames into
+    // scratch and scatter them into the device's stride, leaving the rest silent.
+    // Getting this wrong does not fail — it plays time-shifted screech.
+    std::fill(self->output_map_scratch.begin(), self->output_map_scratch.end(),
+              0.0f);
+    const size_t got =
+        self->to_device.read(self->output_map_scratch.data(), frames);
     if (got < frames) {
-      std::memset(out + got * self->format.channels, 0,
-                  (frames - got) * self->format.channels * sizeof(float));
       self->underruns.fetch_add(1);
+    }
+    for (UInt32 frame = 0; frame < frames; ++frame) {
+      float* destination = out + static_cast<size_t>(frame) * device_channels;
+      const float* source =
+          self->output_map_scratch.data() + static_cast<size_t>(frame) * channels;
+      for (unsigned channel = 0; channel < device_channels; ++channel) {
+        destination[channel] = channel < channels ? source[channel] : 0.0f;
+      }
     }
     return noErr;
   }
@@ -203,18 +242,34 @@ struct CoreAudioBackend::Impl {
     }
     AudioBufferList* list =
         reinterpret_cast<AudioBufferList*>(self->input_bytes.data());
+    const unsigned channels = self->format.channels;
+    const unsigned device_channels = self->input_device_channels;
     list->mNumberBuffers = 1;
-    list->mBuffers[0].mNumberChannels = self->format.channels;
-    list->mBuffers[0].mDataByteSize =
-        frames * self->format.channels * sizeof(float);
+    list->mBuffers[0].mNumberChannels = device_channels;
+    list->mBuffers[0].mDataByteSize = frames * device_channels * sizeof(float);
     list->mBuffers[0].mData = self->input_bytes.data() + sizeof(AudioBufferList);
     if (AudioUnitRender(self->input_unit, flags, timestamp, bus, frames, list) !=
         noErr) {
       self->overruns.fetch_add(1);
       return noErr;
     }
-    if (self->from_device.write(static_cast<const float*>(list->mBuffers[0].mData),
-                                frames) < frames) {
+    const float* rendered = static_cast<const float*>(list->mBuffers[0].mData);
+    if (device_channels == channels) {
+      if (self->from_device.write(rendered, frames) < frames) {
+        self->overruns.fetch_add(1);
+      }
+      return noErr;
+    }
+    // Take our channels out of the device's stride (the mirror of the output map).
+    for (UInt32 frame = 0; frame < frames; ++frame) {
+      const float* source = rendered + static_cast<size_t>(frame) * device_channels;
+      float* destination =
+          self->input_map_scratch.data() + static_cast<size_t>(frame) * channels;
+      for (unsigned channel = 0; channel < channels; ++channel) {
+        destination[channel] = channel < device_channels ? source[channel] : 0.0f;
+      }
+    }
+    if (self->from_device.write(self->input_map_scratch.data(), frames) < frames) {
       self->overruns.fetch_add(1);
     }
     return noErr;
@@ -256,9 +311,11 @@ bool CoreAudioBackend::open(const AudioFormat& format, std::string* error) {
                            std::to_string(format.channels));
   }
 
-  // Rings: a few periods each way, so an I/O cycle's jitter is absorbed without
-  // adding a noticeable delay.
-  const size_t ring_frames = std::max<size_t>(format.period_frames * 8, 1024);
+  impl_->output_device_channels = out_channels;
+  impl_->input_device_channels = in_channels;
+
+  // Rings: well above any device I/O buffer, so a bursty callback cannot starve.
+  const size_t ring_frames = std::max<size_t>(format.period_frames * 64, 4096);
   if (!impl_->to_device.open(ring_frames, format.channels) ||
       !impl_->from_device.open(ring_frames, format.channels)) {
     return fail(error, "coreaudio: cannot size the rings");
@@ -267,12 +324,15 @@ bool CoreAudioBackend::open(const AudioFormat& format, std::string* error) {
       static_cast<size_t>(format.period_frames) * format.channels, 0.0f);
   impl_->write_scratch.assign(
       static_cast<size_t>(format.period_frames) * format.channels, 0.0f);
-  // Room for an AudioBufferList plus one interleaved buffer of audio.
   impl_->max_input_frames = std::max<size_t>(format.period_frames * 8, 4096);
+  const unsigned native_input =
+      std::max(in_channels, static_cast<unsigned>(format.channels));
   impl_->input_bytes.assign(sizeof(AudioBufferList) + impl_->max_input_frames *
-                                                          format.channels *
+                                                          native_input *
                                                           sizeof(float),
                             0);
+  impl_->output_map_scratch.assign(impl_->max_input_frames * format.channels, 0.0f);
+  impl_->input_map_scratch.assign(impl_->max_input_frames * format.channels, 0.0f);
 
   AudioComponentDescription description{};
   description.componentType = kAudioUnitType_Output;
@@ -283,7 +343,9 @@ bool CoreAudioBackend::open(const AudioFormat& format, std::string* error) {
     return fail(error, "coreaudio: no HAL output AudioUnit on this system");
   }
 
-  const AudioStreamBasicDescription asbd = float_format(format);
+  // Each unit is opened at its device's channel count (see float_format).
+  const AudioStreamBasicDescription out_asbd = float_format(format, out_channels);
+  const AudioStreamBasicDescription in_asbd = float_format(format, in_channels);
   const UInt32 on = 1;
   const UInt32 off = 0;
 
@@ -301,7 +363,7 @@ bool CoreAudioBackend::open(const AudioFormat& format, std::string* error) {
                          sizeof(impl_->output_device));
     const OSStatus set_format =
         AudioUnitSetProperty(impl_->output_unit, kAudioUnitProperty_StreamFormat,
-                             kAudioUnitScope_Input, 0, &asbd, sizeof(asbd));
+                             kAudioUnitScope_Input, 0, &out_asbd, sizeof(out_asbd));
     if (set_format != noErr) {
       return fail(error, "coreaudio: the device refuses interleaved float32 at " +
                              std::to_string(format.sample_rate) + " Hz");
@@ -328,7 +390,7 @@ bool CoreAudioBackend::open(const AudioFormat& format, std::string* error) {
                          sizeof(impl_->input_device));
     const OSStatus set_format =
         AudioUnitSetProperty(impl_->input_unit, kAudioUnitProperty_StreamFormat,
-                             kAudioUnitScope_Output, 1, &asbd, sizeof(asbd));
+                             kAudioUnitScope_Output, 1, &in_asbd, sizeof(in_asbd));
     if (set_format != noErr) {
       return fail(error, "coreaudio: the device refuses interleaved float32 at " +
                              std::to_string(format.sample_rate) + " Hz");

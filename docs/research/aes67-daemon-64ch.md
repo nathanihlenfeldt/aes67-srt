@@ -287,3 +287,34 @@ And a small negative result worth keeping: **`streamer_enabled` is not the gate.
 `true`, a source and a self-subscribed sink were created and nothing was received - because the source
 *was* transmitting and the same-host sink could not see it. The setting is unrelated to whether our
 sources stream.
+
+## The ALSA buffer must be at least tens of milliseconds, measured 2026-09-18
+
+**The RAVENNA device distorts capture through an 8 ms ALSA buffer, and the shipped configuration asked
+for exactly that.** `audio.periods: 8` with 48-frame periods is a 384-frame buffer, and it was in every
+sample configuration. Measured with `arecord` on the Pi, 8 channels S24_3LE at 48 kHz, and expressed as
+the ratio of sample-to-sample energy to signal energy (a smooth source is ~0.01, this distortion ~0.15):
+
+| period / buffer (frames) | HF ratio | |
+|---|---|---|
+| 48 / 384 (the shipped `periods: 8`) | **0.155** | distorted |
+| 48 / 768 | 0.044 | better |
+| 48 / 1536 (32 periods) | **0.001** | clean |
+| 48 / 3072 | 0.032 | |
+| 192 / 3072 | 0.007 | clean |
+| 384 / 3072 | 0.064 | |
+
+**How it was found, because the path matters.** The Mac endpoint carried frames at full rate but the
+audio was "screechy". A capture of BlackHole, a known 1 kHz tone pushed through the engine's egress, and
+a direct `arecord` of the Pi's device narrowed it: the output path was clean (the tone came back at
+1 kHz, HF 0.0175), the received bytes were already distorted (HF ~0.1), and `arecord` with the engine's
+own `--period-size=48 --buffer-size=384` reproduced the distortion without any of our code. The buffer,
+not the codecs, the clock or the transport.
+
+**So the sample configs now use `periods: 32` (1,536 frames, 32 ms).** The period stays 48 frames — the
+AES67 packet time and the wire frame's size — and only the ALSA buffer grew, which is what the driver
+needs to hand samples over intact. The spec's line about `periods: 8` keeping "the AES67 cadence" was
+about the frame size, not the buffer, and a 8 ms buffer is simply too small for this device.
+
+**What it does not explain.** The 64-channel path still stalls in libsrt's receive (issue #19); this
+buffer bug is independent and, at 8 channels, produced clean audio once fixed.
