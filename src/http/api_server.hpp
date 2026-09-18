@@ -17,6 +17,7 @@ class Server;
 namespace aes67_srt {
 
 class Engine;
+class Service;
 
 namespace daemon {
 class DaemonClient;
@@ -47,7 +48,7 @@ class DaemonClient;
  */
 class ApiServer {
  public:
-  ApiServer(Config* config, Engine* engine, daemon::DaemonClient* daemon,
+  ApiServer(Config* config, Service* service, daemon::DaemonClient* daemon,
             std::string webui_dir, std::string config_path);
   ~ApiServer();
 
@@ -73,8 +74,11 @@ class ApiServer {
   /** A copy of the running configuration, taken under the lock. */
   Config config_snapshot();
 
+  /** The engine, or null when it is stopped. */
+  Engine* engine();
+
   Config* config_{nullptr};
-  Engine* engine_{nullptr};
+  Service* service_{nullptr};
   daemon::DaemonClient* daemon_{nullptr};
   std::string webui_dir_;
   /** Where a configuration POST is written. Empty means "do not persist". */

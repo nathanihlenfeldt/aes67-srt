@@ -12,6 +12,7 @@
 #include "aes67/daemon_client.hpp"
 #include "engine.hpp"
 #include "log.hpp"
+#include "service.hpp"
 #include "version.hpp"
 
 namespace aes67_srt {
@@ -441,10 +442,14 @@ setInterval(loadAes67, 5000);
 
 }  // namespace
 
-ApiServer::ApiServer(Config* config, Engine* engine, daemon::DaemonClient* daemon,
+Engine* ApiServer::engine() {
+  return service_ != nullptr ? service_->engine() : nullptr;
+}
+
+ApiServer::ApiServer(Config* config, Service* service, daemon::DaemonClient* daemon,
                      std::string webui_dir, std::string config_path)
     : config_(config),
-      engine_(engine),
+      service_(service),
       daemon_(daemon),
       webui_dir_(std::move(webui_dir)),
       config_path_(std::move(config_path)) {}
@@ -460,11 +465,11 @@ Config ApiServer::config_snapshot() {
 
 nlohmann::json ApiServer::build_preflight() {
   const EngineStatus status =
-      engine_ != nullptr ? engine_->status() : EngineStatus{};
+      engine() != nullptr ? engine()->status() : EngineStatus{};
   const Config config = config_snapshot();
 
-  const bool device_open = engine_ != nullptr && engine_->backend() != nullptr &&
-                           engine_->backend()->is_open();
+  const bool device_open = engine() != nullptr && engine()->backend() != nullptr &&
+                           engine()->backend()->is_open();
   const bool link_open = status.link_open;
 
   nlohmann::json checks = nlohmann::json::array();
@@ -498,8 +503,8 @@ nlohmann::json ApiServer::build_preflight() {
 
   checks.push_back({{"name", "device"},
                     {"ok", device_open},
-                    {"detail", engine_ != nullptr && engine_->backend() != nullptr
-                                   ? engine_->backend()->detail()
+                    {"detail", engine() != nullptr && engine()->backend() != nullptr
+                                   ? engine()->backend()->detail()
                                    : std::string("no audio backend")}});
   checks.push_back({{"name", "link"},
                     {"ok", link_open},
@@ -511,7 +516,7 @@ nlohmann::json ApiServer::build_preflight() {
 
 nlohmann::json ApiServer::build_status() {
   const EngineStatus status =
-      engine_ != nullptr ? engine_->status() : EngineStatus{};
+      engine() != nullptr ? engine()->status() : EngineStatus{};
 
   nlohmann::json engine;
   engine["running"] = status.running;
@@ -528,6 +533,8 @@ nlohmann::json ApiServer::build_status() {
   engine["clock_offset_ppm"] = status.clock_offset_ppm;
   engine["clock_ratio"] = status.clock_ratio;
   engine["test_signal_channel"] = status.test_signal_channel;
+  engine["state"] = service_ != nullptr ? service_->state() : "stopped";
+  engine["error"] = service_ != nullptr ? service_->last_error() : "";
 
   nlohmann::json link;
   link["available"] = status.link_stats_available;
@@ -648,8 +655,8 @@ void ApiServer::register_routes() {
     // never reaches the file. The running config takes the new offset so
     // that file and running state agree on the field that did apply.
     if (!applied.empty()) {
-      if (engine_ == nullptr ||
-          !engine_->set_egress_delay_ms(parsed.egress.delay_ms, &reason)) {
+      if (engine() == nullptr ||
+          !engine()->set_egress_delay_ms(parsed.egress.delay_ms, &reason)) {
         reply_text(response, 400, reason);
         return;
       }
@@ -892,25 +899,25 @@ void ApiServer::register_routes() {
       reply_text(response, 400, "egress.delay_ms: expected a number");
       return;
     }
-    if (engine_ == nullptr) {
+    if (engine() == nullptr) {
       reply_text(response, 503, "the engine is not running");
       return;
     }
-    if (!engine_->set_egress_delay_ms(body["delay_ms"].get<double>(), &error)) {
+    if (!engine()->set_egress_delay_ms(body["delay_ms"].get<double>(), &error)) {
       reply_text(response, 400, error);
       return;
     }
-    reply_json(response, {{"ok", true}, {"delay_ms", engine_->egress_delay_ms()}});
+    reply_json(response, {{"ok", true}, {"delay_ms", engine()->egress_delay_ms()}});
   });
 
   svr->Post("/api/egress/test-signal",
             [this](const httplib::Request&, httplib::Response& response) {
               std::string error;
-              if (engine_ == nullptr) {
+              if (engine() == nullptr) {
                 reply_text(response, 503, "the engine is not running");
                 return;
               }
-              if (!engine_->trigger_test_signal(&error)) {
+              if (!engine()->trigger_test_signal(&error)) {
                 reply_text(response, 400, error);
                 return;
               }

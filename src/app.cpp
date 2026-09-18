@@ -153,38 +153,38 @@ int App::run() {
     }
   }
 
-  Engine engine;
-  if (!engine.prepare(config_, &error)) {
-    log().write(LogLevel::error, error);
-    return static_cast<int>(ExitCode::runtime_error);
-  }
+  // The engine is owned by a service rather than run here on the stack, so the
+  // control surface can stop and start it while this process — and the page —
+  // stays up (issue #33).
+  service_.reset(new EngineService(&config_, &config_mutex_, config_path_));
 
   // The control surface (ticket 13), on its own thread for as long as the engine
   // runs. A port that will not bind is a warning rather than a failure: audio is
   // the point, and a second instance's collision should not take down a working
   // link just because it cannot also have the status page.
-  ApiServer control(&config_, &engine, daemon.get(), std::string(), config_path_);
+  ApiServer control(&config_, service_.get(), daemon.get(), std::string(),
+                    config_path_);
   if (!control.start(&error)) {
     log().write(LogLevel::warn,
                 error + " (continuing without the control surface)");
   }
 
-  // The engine owns both threads and paces itself by the device, so nothing here
-  // has to drive it: this thread waits for a signal and then asks it to stop.
-  // Run on a thread of its own so that a stop request is answered promptly
-  // rather than after the current read or receive returns.
-  int result = 0;
-  std::thread running([&engine, &result] { result = engine.run(); });
+  // The engine runs on the service's own worker, so a start or stop from the
+  // control surface is answered without touching this thread. Here we only wait
+  // for the process to be asked to stop.
+  if (!service_->start(&error)) {
+    log().write(LogLevel::error, error);
+    control.stop();
+    return static_cast<int>(ExitCode::runtime_error);
+  }
   while (!stop_requested.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   log().write(LogLevel::info, "stopping");
-  engine.stop();
-  running.join();
+  service_->stop();
   control.stop();
 
-  return result == 0 ? static_cast<int>(ExitCode::ok)
-                     : static_cast<int>(ExitCode::runtime_error);
+  return static_cast<int>(ExitCode::ok);
 }
 
 }  // namespace aes67_srt

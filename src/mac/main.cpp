@@ -18,6 +18,7 @@
 #include "exit_code.hpp"
 #include "http/api_server.hpp"
 #include "log.hpp"
+#include "service.hpp"
 #include "version.hpp"
 
 namespace {
@@ -123,16 +124,15 @@ int main(int argc, char** argv) {
                            "fake mode: null audio, loopback link");
   }
 
-  aes67_srt::Engine engine;
-  if (!engine.prepare(config, &reason)) {
-    aes67_srt::log().write(aes67_srt::LogLevel::error, reason);
-    return static_cast<int>(aes67_srt::ExitCode::runtime_error);
-  }
+  // The engine is owned by a service so the control surface can stop and start
+  // it while the process stays up (issue #33).
+  std::mutex config_mutex;
+  aes67_srt::EngineService service(&config, &config_mutex, config_path);
 
   // No daemon client: this product carries no AES67 and no PTP (ADR 0004), so the
   // control surface starts with a null daemon and its preflight drops the daemon
   // and PTP checks rather than reporting failures nobody here can fix.
-  aes67_srt::ApiServer control(&config, &engine, nullptr, std::string(),
+  aes67_srt::ApiServer control(&config, &service, nullptr, std::string(),
                                config_path);
   if (!control.start(&reason)) {
     aes67_srt::log().write(aes67_srt::LogLevel::warn,
@@ -144,16 +144,17 @@ int main(int argc, char** argv) {
   std::signal(SIGHUP, handle_signal);
   stop_requested.store(false);
 
-  int result = 0;
-  std::thread running([&engine, &result] { result = engine.run(); });
+  if (!service.start(&reason)) {
+    aes67_srt::log().write(aes67_srt::LogLevel::error, reason);
+    control.stop();
+    return static_cast<int>(aes67_srt::ExitCode::runtime_error);
+  }
   while (!stop_requested.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   aes67_srt::log().write(aes67_srt::LogLevel::info, "stopping");
-  engine.stop();
-  running.join();
+  service.stop();
   control.stop();
 
-  return result == 0 ? static_cast<int>(aes67_srt::ExitCode::ok)
-                     : static_cast<int>(aes67_srt::ExitCode::runtime_error);
+  return static_cast<int>(aes67_srt::ExitCode::ok);
 }

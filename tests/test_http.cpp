@@ -20,11 +20,37 @@
 #include "aes67/daemon_client.hpp"
 #include "config.hpp"
 #include "engine.hpp"
+#include "service.hpp"
 #include "test_framework.hpp"
 
 namespace {
 
 using aes67_srt::ApiServer;
+
+namespace {
+
+/**
+ * A service that just reports a caller-owned engine. These tests exercise the
+ * control surface, not the lifecycle, so there is no worker to start or stop —
+ * the engine is prepared and opened by the test itself.
+ */
+class StubService : public aes67_srt::Service {
+ public:
+  explicit StubService(aes67_srt::Engine* engine) : engine_(engine) {}
+  aes67_srt::Engine* engine() override { return engine_; }
+  bool running() const override { return engine_ != nullptr && engine_->running(); }
+  std::string state() const override { return running() ? "running" : "stopped"; }
+  std::string last_error() const override { return std::string(); }
+  bool start(std::string*) override { return false; }
+  void stop() override {}
+  bool restart(std::string*) override { return false; }
+
+ private:
+  aes67_srt::Engine* engine_;
+};
+
+}  // namespace
+
 using aes67_srt::Config;
 using aes67_srt::Engine;
 
@@ -70,7 +96,8 @@ TEST_CASE(http_status_carries_the_engine_figures_and_the_preflight) {
   CHECK(engine.open(&error));
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
+  StubService service(&engine);
+  ApiServer server(&config, &service, daemon.get(), "/nonexistent-webui", "");
   CHECK(server.start(&error));
 
   httplib::Client client("127.0.0.1", config.http_port);
@@ -115,7 +142,8 @@ TEST_CASE(http_status_says_exactly_what_is_wrong_with_no_daemon_and_no_link) {
   // Deliberately not opened: no device, no link.
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
+  StubService service(&engine);
+  ApiServer server(&config, &service, daemon.get(), "/nonexistent-webui", "");
   CHECK(server.start(&error));
 
   httplib::Client client("127.0.0.1", config.http_port);
@@ -175,7 +203,8 @@ TEST_CASE(http_the_av_delay_is_adjustable_live_and_refused_when_impossible) {
   CHECK(engine.open(&error));
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
+  StubService service(&engine);
+  ApiServer server(&config, &service, daemon.get(), "/nonexistent-webui", "");
   CHECK(server.start(&error));
   httplib::Client client("127.0.0.1", config.http_port);
   // Warm the server up so the POST below is not racing its accept thread.
@@ -234,7 +263,8 @@ TEST_CASE(http_the_config_is_restart_aware_and_persisted) {
   CHECK(engine.open(&error));
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", path);
+  StubService service(&engine);
+  ApiServer server(&config, &service, daemon.get(), "/nonexistent-webui", path);
   CHECK(server.start(&error));
   httplib::Client client("127.0.0.1", config.http_port);
   CHECK(get_retrying(&client, "/api/status"));
@@ -304,7 +334,8 @@ TEST_CASE(http_the_aes67_panel_reads_the_daemon_and_wires_sinks) {
   CHECK(engine.prepare(config, &error));
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
+  StubService service(&engine);
+  ApiServer server(&config, &service, daemon.get(), "/nonexistent-webui", "");
   CHECK(server.start(&error));
   httplib::Client client("127.0.0.1", config.http_port);
   CHECK(get_retrying(&client, "/api/status"));
@@ -373,7 +404,8 @@ TEST_CASE(http_preflight_drops_the_daemon_checks_when_there_is_no_daemon) {
   CHECK(engine.prepare(config, &error));
   CHECK(engine.open(&error));
 
-  ApiServer server(&config, &engine, nullptr, "/nonexistent-webui", "");
+  StubService service(&engine);
+  ApiServer server(&config, &service, nullptr, "/nonexistent-webui", "");
   CHECK(server.start(&error));
   httplib::Client client("127.0.0.1", config.http_port);
   httplib::Result response = get_retrying(&client, "/api/status");
@@ -397,7 +429,8 @@ TEST_CASE(http_version_and_log_endpoints_answer) {
   CHECK(engine.prepare(config, &error));
   auto daemon = aes67_srt::daemon::DaemonClient::create(config.daemon);
 
-  ApiServer server(&config, &engine, daemon.get(), "/nonexistent-webui", "");
+  StubService service(&engine);
+  ApiServer server(&config, &service, daemon.get(), "/nonexistent-webui", "");
   CHECK(server.start(&error));
 
   httplib::Client client("127.0.0.1", config.http_port);

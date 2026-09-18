@@ -1,10 +1,13 @@
 #pragma once
 
+#include <memory>
+#include <mutex>
 #include <string>
 
 #include "commissioning.hpp"
 #include "config.hpp"
 #include "exit_code.hpp"
+#include "service.hpp"
 
 namespace aes67_srt {
 
@@ -86,6 +89,10 @@ class App {
   void apply_fake();
 
   Config config_;
+  /** Guards `config_` across the control surface, the engine's restart and this. */
+  std::mutex config_mutex_;
+  /** Owns the engine's lifecycle so the control surface can start and stop it. */
+  std::unique_ptr<EngineService> service_;
   std::string config_path_;
   bool fake_ = false;
   Subscription subscription_ = Subscription::none;

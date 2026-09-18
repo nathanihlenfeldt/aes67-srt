@@ -228,6 +228,7 @@ set(AES67_SRT_SOURCES
   src/http/api_server.cpp
   src/log.cpp
   src/parallel_for.cpp
+  src/service.cpp
   src/transport/link.cpp
   src/util.cpp
   src/version.cpp
