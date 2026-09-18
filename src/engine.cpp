@@ -477,7 +477,25 @@ bool Engine::step_transmit(std::string* error) {
   return true;
 }
 
+void Engine::reset_playout() {
+  const uint64_t capacity_periods =
+      2 * periods_for_ms(config_.link.alarm_delay_ms, format_) + 1;
+  playout_.reset(new clock::PlayoutBuffer(capacity_periods, format_));
+  playing_ = false;
+  priming_periods_ = 0;
+  prime_reported_ = false;
+  published_delay_ms_.store(0.0);
+  published_delay_fraction_.store(0.0);
+  published_clock_offset_ppm_.store(0.0);
+  published_clock_ratio_.store(1.0);
+}
+
 bool Engine::step_receive(std::string* error) {
+  // A link that was re-established starts a new stream, so the clock is rebuilt
+  // here, on its own thread, before this turn touches it.
+  if (playout_reset_requested_.exchange(false)) {
+    reset_playout();
+  }
   if (playout_ == nullptr) {
     return fail(error, "engine: the clock is not built; call prepare and open");
   }
@@ -866,6 +884,10 @@ bool Engine::reopen_link(std::string* error) {
   // mode is what makes every receive return. Applied after connect, so it does
   // not affect the handshake.
   link_->set_nonblocking();
+  // A re-established link is a new stream: its sample positions may start
+  // anywhere, so the receive thread rebuilds the clock before it plays. Without
+  // this the old head refuses the new positions as late and the link collapses.
+  playout_reset_requested_.store(true);
   return true;
 }
 

@@ -322,6 +322,17 @@ class Engine {
   /** Re-establish the link and reapply its options. The supervisor's one job. */
   bool reopen_link(std::string* error);
 
+  /**
+   * Rebuild the clock for a new stream. Called on the receive thread, because the
+   * buffer belongs to it.
+   *
+   * A reconnected link is a new stream whose sample positions may start anywhere —
+   * after the far end restarts, at zero again. A playout still holding the old
+   * stream's head refuses the new positions as late, the app stops draining, and
+   * the link collapses on flow control. This is what the reboot test found.
+   */
+  void reset_playout();
+
   Config config_;
   std::unique_ptr<audio::AudioBackend> backend_;
   std::unique_ptr<transport::Link> link_;
@@ -399,6 +410,9 @@ class Engine {
   std::atomic<double> published_clock_ratio_{1.0};
   /** Frames concealed as a permanent hole, published by the receive loop. */
   std::atomic<uint64_t> published_concealed_{0};
+  /** Set by the supervisor when the link is re-established; the receive thread
+   *  rebuilds the clock for the new stream and clears it. */
+  std::atomic<bool> playout_reset_requested_{false};
 
   /**
    * Requests posted by the control surface's thread, consumed by the receive loop.
