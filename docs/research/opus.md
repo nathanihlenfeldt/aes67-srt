@@ -1,8 +1,10 @@
 # Opus for an 8-channel block
 
 Status: researched 2026-09-16 for ticket 04 (issue #5), against tag **`v1.6.1`** of
-[`xiph/opus`](https://github.com/xiph/opus). This is roadmap phase 2 work: v1 carries PCM only, and
-nothing here delays it. What it does is answer the questions `docs/ROADMAP.md` left open.
+[`xiph/opus`](https://github.com/xiph/opus); the open items were closed **on the target Pi 5 on
+2026-09-18** against the distribution's **libopus 1.5.2**. This is roadmap phase 2 work: v1 carries
+PCM only, and nothing here delays it. What it does is answer the questions `docs/ROADMAP.md` left
+open.
 
 ## How to reproduce
 
@@ -58,9 +60,10 @@ sets an internal delay compensation of 4 ms:
 
 At 48 kHz that is 192 samples, which implies 24 ms for a 20 ms frame. **The API disagrees.**
 `OPUS_GET_LOOKAHEAD` returns **312 samples = 6.50 ms at 48 kHz** — measured, not read, by
-`scripts/measure-hardware.sh` on the first machine it ran on. The total algorithmic delay is
-therefore **frame + 6.5 ms**: **26.5 ms** at 20 ms frames, exactly the folklore figure this document
-had started to doubt.
+`scripts/measure-hardware.sh` on the first machine it ran on, and again on the target Pi 5 on
+2026-09-18 (libopus 1.5.2, governor `performance`), which returned the same 312. The total
+algorithmic delay is therefore **frame + 6.5 ms**: **26.5 ms** at 20 ms frames, exactly the folklore
+figure this document had started to doubt.
 
 The internal constant and the reported lookahead are measuring different things, and the reported one
 is the one an application must compensate for. Which is what the API says in as many words
@@ -137,7 +140,8 @@ the script prints the command.
 
 **So what is true?** Encoding 64 channels of Opus costs **~14% of a fast desktop core**, decoding
 ~4%. **And on the target hardware it is 43.32% of one Pi 5 core** (2.3× realtime), with decode at
-14.90% — measured 2026-09-16, governor at `performance`, best of three. The Pi is therefore **3×
+14.90% — measured 2026-09-16, governor at `performance`, best of three, and **reproduced on
+2026-09-18 at 43.48% / 14.97%** against the distribution's libopus 1.5.2. The Pi is therefore **3×
 slower than the laptop** at this work, which is inside the three-to-five-times band predicted above.
 
 **The verdict, which the earlier version of this document got wrong in both directions:**
@@ -161,18 +165,34 @@ the target with the governor fixed and taken more than once.
 
 ## Unresolved: what only hardware can answer
 
-1. **CPU per channel on the target Pi** at 64 channels of 48 kHz — the roadmap's deciding number.
-2. **`OPUS_GET_LOOKAHEAD`'s actual value at 48 kHz**, to settle 4 ms against the folklore's 6.5 ms.
-3. **Whether coupling helps or hurts** on eight unrelated console channels, measured as bitrate
-   against quality rather than argued.
-4. **What 64 and 128 kbit/s per channel sound like on programme material.** The RFC's range runs from
-   6 kbit/s mono speech to 510 kbit/s stereo music; where a *contribution* link should sit inside that
-   is a listening decision, not a specification.
-5. **The distribution's libopus version**, and whether the multistream API is present in it — it is
-   old and ubiquitous, but that is a claim to check rather than assume.
+**Closed on the target, 2026-09-18.** The probe in section 7 of `scripts/measure-hardware.sh` was run
+on the Pi 5 with the governor at `performance`, best of three:
 
-Items 1, 2 and 5 belong in the same hardware session as the clock-recovery measurements; 3 and 4 need
-ears.
+```
+lookahead        : 312 samples = 6.50 ms at 48 kHz
+encode           : 4348 ms = 2.3x realtime, 43.48% of one core (0.679% per channel)  [best of 3]
+decode           : 1497 ms = 6.7x realtime, 14.97% of one core  [best of 3]
+achieved bitrate : 8.27 Mbit/s total (129164 bit/s per channel)
+```
+
+1. **CPU per channel on the target Pi — answered: 0.679% of a core per channel to encode, 14.97% to
+   decode all 64.** This reproduces the 2026-09-16 figure (43.32% / 14.90%) within noise, so it is a
+   number to build on. It is single-threaded across the eight blocks; see "What this changes".
+2. **`OPUS_GET_LOOKAHEAD` — answered: 312 samples = 6.50 ms at 48 kHz**, on the Pi and on the
+   laptop. The encoder's `4 ms` internal constant is not the application-facing delay; the 26.5 ms
+   folklore for a 20 ms frame is right after all.
+5. **The distribution's libopus — answered: 1.5.2** (`libopus-dev`/`libopus0` 1.5.2-2 on Raspberry Pi
+   OS), and **the multistream API is present** — `opus_multistream.h` is installed and the probe
+   above compiles and runs against it. The research was written against upstream `v1.6.1`; nothing
+   the probe uses differs in 1.5.2, but the version actually linked is recorded here so an API
+   change is a thing to check rather than to assume.
+
+Still open, and they need ears rather than a bench:
+
+3. **Whether coupling helps or hurts** on eight unrelated console channels, measured as bitrate
+   against quality. The default stays eight mono streams until this says otherwise.
+4. **What 64 and 128 kbit/s per channel sound like on programme material.** A listening decision, not
+   a specification.
 
 ## What this changes in the roadmap
 
@@ -183,7 +203,9 @@ All of that holds, and three things are now more specific than it was:
   and coupling as an experiment rather than an assumption.
 - **In-band FEC is off**, because SRT has already bought that resilience and Opus charges for it in
   quality.
-- **The latency to budget for is frame + 4 ms**, pending a `OPUS_GET_LOOKAHEAD` measurement — so a
-  20 ms frame costs the A/V budget ~24 ms, not the ~26.5 ms usually quoted. The delay line has to
-  subtract this, and the operator should be told the codec's share of the delay rather than inheriting
-  it silently.
+- **The latency to budget for is frame + 6.5 ms** — settled by `OPUS_GET_LOOKAHEAD`, measured at 312
+  samples on both the laptop and the Pi. A 20 ms frame costs the A/V budget **~26.5 ms**. The delay
+  line subtracts this, and the operator is told the codec's share rather than inheriting it silently.
+- **Phase 2 must thread per block.** 43.5% of a Pi core to encode 64 channels is affordable only
+  because the eight block encoders can run on the Pi's four cores; done on one thread it is a
+  CPU-bound appliance waiting for load. Design it in.

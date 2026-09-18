@@ -39,13 +39,15 @@ fit" into "fits, at a quality cost the operator chose".
   Encoder: `libopus`. **Researched: `docs/research/opus.md`** — the mechanism is the multistream API
   (the single-stream API cannot carry 8 channels), coupling is an experiment rather than an
   assumption, in-band FEC is **off** because SRT has already bought that resilience, and the latency
-  to budget is frame + 4 ms.
+  to budget is frame + 6.5 ms, measured.
 - **AAC-LC second.** Not a schema problem but a **licensing** one: a patent pool applies to
   encoders shipped in a product, and FDK-AAC's licence is not GPL-compatible. It means ffmpeg's
   native AAC encoder or a licensed one, and an ADR when the time comes.
-- **Opus's channel mapping needs deciding**: an 8-channel block as one multistream Opus stream
-  (coupled stereo pairs) versus 8 independent mono streams. Coupled pairs are the sensible default;
-  the block boundary is already there.
+- **Opus's channel mapping: eight mono streams per block, decided.** The research's default is
+  **eight independent mono streams** (family 255, explicit mapping), because our channels are
+  arbitrary console channels rather than stereo pairs and coupling is an assumption about
+  correlation that may not hold. Coupled pairs are an experiment to be measured against it, not the
+  starting point.
 
 **Density targets.**
 
@@ -56,24 +58,25 @@ fit" into "fits, at a quality cost the operator chose".
 | Opus | 64 kbit/s | 4 Mbit/s | ~18× less |
 
 **But bandwidth may not be what sets the limit.** Measuring Opus put encoding 64 channels at
-**~14% of a fast desktop core** (`docs/research/opus.md` — a best-of-three figure; a single sample of
-the same probe read 39%, which is how easily this number lies). A Pi 5 core is perhaps three to five
-times slower at that work, so 64 channels sit somewhere between 40% and 70% of one Pi core: tight on
-a four-core appliance, but not impossible. **The Pi number decides**, and it is section 7 of
-`scripts/measure-hardware.sh`, taken with the CPU governor at `performance`. If it does not fit,
-phase 2 becomes fewer encoded channels, a faster appliance class, or encoding only some blocks —
-which the per-block payload type already makes possible.
+**~14% of a fast desktop core** and **43.5% of one Pi 5 core** (`docs/research/opus.md` — best-of-three
+figures, governor at `performance`; a single sample of the same probe read 39%, which is how easily
+this number lies). Decoding is 15% of a Pi core. The probe runs the eight block encoders
+**sequentially on one thread**; eight threads, or four, divide that across the Pi's four cores, so
+the machine cost is closer to 11–15%. **The Pi number is in, and it fits — but the codec is the
+entire CPU budget of phase 2**: a phase 2 implementation that does not thread per block will be
+CPU-bound on a single core and will fail under load. That is a design requirement, not an
+optimisation. If it still does not fit at 64, phase 2 becomes fewer encoded channels, a faster
+appliance class, or encoding only some blocks — which the per-block payload type already makes
+possible.
 
 **Latency cost is real and must be counted against the A/V budget.** An Opus encoder adds the frame
-duration **plus its algorithmic delay** to the transport floor: at 48 kHz that is **frame + 4 ms**,
-so **~24 ms** with 20 ms frames, ~14 ms at 10 ms, ~9 ms at 5 ms (`docs/research/opus.md`, which
-cites `opus_encoder.c:311-313`). Every millisecond of it is headroom the operator loses when lining
-audio up with vision, and it comes out of the same budget the clock module needs for drift.
-
-**Settle the figure on hardware before designing the delay line around it.** The widely quoted 26.5 ms
-for 20 ms frames implies a 6.5 ms lookahead, which the encoder's own code contradicts. The authority
-is `OPUS_GET_LOOKAHEAD`, queried at runtime (`opus_defines.h:500-502`) — not this document, not a blog
-post, and not the number above. `docs/research/opus.md` lists measuring it as an open item.
+duration **plus its algorithmic delay** to the transport floor. At 48 kHz that delay is
+**6.50 ms** — `OPUS_GET_LOOKAHEAD` returns **312 samples**, measured on the Pi and on the laptop, and
+the encoder's internal `4 ms` constant is measuring something else (`docs/research/opus.md`). So the
+cost is **frame + 6.5 ms**: **~26.5 ms** with 20 ms frames, ~16.5 ms at 10 ms, ~11.5 ms at 5 ms.
+Every millisecond of it is headroom the operator loses when lining audio up with vision, and it
+comes out of the same budget the clock module needs for drift. The delay line subtracts it, and the
+codec's share is shown to the operator rather than inherited silently.
 
 **Policy — decided, and identical to PCM.** Codec mode keeps the same rule: **never drop audio,
 let delay grow, show the delay, alarm past the threshold. Quality changes only when a human
