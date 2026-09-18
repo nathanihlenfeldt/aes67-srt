@@ -300,6 +300,20 @@ class Engine {
   codec::OpusBlock* codec_for_block(size_t block_index, bool opus,
                                     std::string* error);
 
+  /**
+   * Keep the link up: re-establish it whenever it goes down, without a restart.
+   *
+   * Runs on its own thread. When the link is down it calls reopen_link(), which
+   * blocks in accept or connect; when that fails it waits, backing off, and tries
+   * again. This is what makes a site-to-studio link unattended: a caller that
+   * starts before its peer, a listener whose caller left, and a connection that
+   * dropped all come back here rather than needing a human.
+   */
+  void link_supervisor_loop();
+
+  /** Re-establish the link and reapply its options. The supervisor's one job. */
+  bool reopen_link(std::string* error);
+
   Config config_;
   std::unique_ptr<audio::AudioBackend> backend_;
   std::unique_ptr<transport::Link> link_;

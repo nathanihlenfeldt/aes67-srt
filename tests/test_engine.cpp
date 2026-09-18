@@ -490,6 +490,73 @@ TEST_CASE(engine_carries_audio_from_one_box_to_another_through_the_clock) {
   remote.stop();
 }
 
+TEST_CASE(engine_the_link_reconnects_after_the_caller_drops) {
+  // The failure this ticket exists for: on the bench, a dropped connection left
+  // the listener holding a dead socket for ever, and the only way back was to
+  // restart both ends in the right order. Here the caller goes away and a *new*
+  // caller connects, and the receiver's frame count must advance across the gap
+  // with no restart of the site.
+  if (!aes67_srt::transport::Link::available()) {
+    std::cout << "  no libsrt in this build: skipping the reconnect test"
+              << std::endl;
+    return;
+  }
+
+  Config site_config = engine_config(1, "listener", 19601);
+  site_config.link.role = "rx";
+  Config remote_config = engine_config(1, "caller", 19602, "127.0.0.1:19601");
+  remote_config.link.role = "tx";
+  Config second_config = engine_config(1, "caller", 19603, "127.0.0.1:19601");
+  second_config.link.role = "tx";
+
+  Engine site;
+  Engine first;
+  Engine second;
+  std::string error;
+  CHECK(site.prepare(site_config, &error));
+  CHECK(first.prepare(remote_config, &error));
+  CHECK(second.prepare(second_config, &error));
+
+  const auto wait_for_frames = [](Engine* engine, uint64_t wanted, int timeout_ms) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (engine->frames_received() >= wanted) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return engine->frames_received() >= wanted;
+  };
+
+  // The listener blocks in accept, so run() goes on its own thread; the caller
+  // connects a moment later, as the two-machine tests do.
+  std::thread site_thread([&] { site.run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::thread first_thread([&] { first.run(); });
+  CHECK(wait_for_frames(&site, 50, 15000));
+
+  // The caller leaves. Nothing restarts the site: the supervisor must notice the
+  // dead link and go back to accepting.
+  first.stop();
+  first_thread.join();
+  std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
+  const uint64_t before = site.frames_received();
+  std::thread second_thread([&] { second.run(); });
+  const bool recovered = wait_for_frames(&site, before + 50, 30000);
+
+  second.stop();
+  site.stop();
+  second_thread.join();
+  site_thread.join();
+
+  CHECK(recovered);
+  CHECK(site.frames_received() > before);
+  std::cout << "    reconnect: " << before << " frames before the drop, "
+            << site.frames_received() << " after reconnect" << std::endl;
+}
+
 TEST_CASE(engine_counts_the_silence_it_feeds_a_link_that_cannot_fill_the_clock) {
   // The case the two-machine run found: a link delivering far less than the
   // appliance offers. The clock primes past its deadline, plays what little there

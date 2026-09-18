@@ -59,6 +59,20 @@ constexpr int k_status_interval_ms = 1000;
 constexpr int k_status_slice_ms = 100;
 
 /**
+ * How the link supervisor watches and retries.
+ *
+ * It checks a healthy link this often, and when the link is down it waits before
+ * trying again — doubling from the minimum to the maximum, so a peer that is off
+ * is not hammered and a peer that comes straight back is met quickly. The floor
+ * is short because a dropped connection should come back in a fraction of a
+ * second; the ceiling is seconds because a peer that is down for minutes must not
+ * fill the log.
+ */
+constexpr int k_link_watch_ms = 200;
+constexpr int k_link_retry_min_ms = 250;
+constexpr int k_link_retry_max_ms = 4000;
+
+/**
  * The most messages one iteration will consume.
  *
  * A frame is eight messages of `k_max_message_bytes`, so this is a couple of
@@ -827,6 +841,55 @@ void Engine::receive_loop() {
   }
 }
 
+bool Engine::reopen_link(std::string* error) {
+  if (!link_->open(config_, error)) {
+    return false;
+  }
+  // Non-blocking rather than short: this loop has a device to feed every
+  // millisecond, and any wait in the receive path is a wait the device pays for.
+  link_->set_receive_timeout_ms(k_receive_poll_ms);
+  // The send needs the same bound as the receive: a peer that stops reading must
+  // not be able to park this loop inside a network call, or the process can never
+  // be stopped.
+  link_->set_send_timeout_ms(k_send_poll_ms);
+  // A zero timeout is not enough on the receive side: blocking mode still waits
+  // for a delivered frame, so a peer that is connected but silent — or one that
+  // has gone — parks `srt_recvmsg` for ever and SIGTERM is ignored. Non-blocking
+  // mode is what makes every receive return. Applied after connect, so it does
+  // not affect the handshake.
+  link_->set_nonblocking();
+  return true;
+}
+
+void Engine::link_supervisor_loop() {
+  int backoff_ms = k_link_retry_min_ms;
+  while (!stop_requested_.load()) {
+    if (link_->is_open()) {
+      backoff_ms = k_link_retry_min_ms;
+      std::this_thread::sleep_for(std::chrono::milliseconds(k_link_watch_ms));
+      continue;
+    }
+    std::string error;
+    if (reopen_link(&error)) {
+      log().write(LogLevel::info, "engine: link up: " + link_->peer_description());
+      backoff_ms = k_link_retry_min_ms;
+      continue;
+    }
+    if (stop_requested_.load()) {
+      break;
+    }
+    log().write(LogLevel::warn, "engine: link down: " + error + "; retrying in " +
+                                    std::to_string(backoff_ms) + " ms");
+    // Sleep in slices so a stop is answered promptly rather than after the whole
+    // backoff, which matters when the backoff has grown to seconds.
+    for (int slept = 0; slept < backoff_ms && !stop_requested_.load();
+         slept += k_status_slice_ms) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(k_status_slice_ms));
+    }
+    backoff_ms = std::min(backoff_ms * 2, k_link_retry_max_ms);
+  }
+}
+
 void Engine::status_loop() {
   bool reported_reason = false;
   while (!stop_requested_.load()) {
@@ -875,28 +938,29 @@ bool Engine::open(std::string* error) {
   // stop flag has to be visible to.
   stop_requested_ = false;
   link_->set_abort_flag(&stop_requested_);
-  if (!link_->open(config_, error)) {
-    return false;
+  // The link may fail to come up *now* and succeed later — a caller whose peer is
+  // not listening yet, or a listener that has not been called — and that is the
+  // normal unattended case, not a reason to refuse to start. The supervisor
+  // retries. A build with no libsrt is the one permanent refusal, and it is
+  // answered here rather than retried for ever.
+  std::string link_error;
+  if (!link_->open(config_, &link_error)) {
+    if (!transport::Link::available()) {
+      return fail(error, link_error);
+    }
+    log().write(LogLevel::warn, "engine: the link is not up yet: " + link_error +
+                                    "; it will keep trying");
+  } else {
+    link_->set_receive_timeout_ms(k_receive_poll_ms);
+    link_->set_send_timeout_ms(k_send_poll_ms);
+    link_->set_nonblocking();
   }
   if (!backend_->open(format_, error)) {
     link_->close();
     return false;
   }
-  // Non-blocking rather than short: this loop has a device to feed every
-  // millisecond, and any wait in the receive path is a wait the device pays for.
-  // See k_receive_poll_ms for why the 2 ms this used to be was not short enough,
-  // and why 0 is documented to be non-blocking rather than guessed.
-  link_->set_receive_timeout_ms(k_receive_poll_ms);
-  // The send needs the same bound as the receive: a peer that stops reading must
-  // not be able to park this loop inside a network call, or the process can never
-  // be stopped. See k_send_poll_ms.
-  link_->set_send_timeout_ms(k_send_poll_ms);
-  // And a zero timeout is not enough on the receive side: blocking mode still waits
-  // for a delivered frame, so a peer that is connected but silent — or one that has
-  // gone — parks `srt_recvmsg` for ever and SIGTERM is ignored. Non-blocking mode
-  // is what makes every receive return. The connection is up by now, so this does
-  // not affect the handshake.
-  link_->set_nonblocking();
+  // The receive/send options are set inside reopen_link for the first connection
+  // too when the link opened above, so nothing more is needed here.
 
   // The clock, built per open rather than per process: a link that is reopened is a
   // stream whose sample positions may well start somewhere else, and a buffer still
@@ -1011,6 +1075,10 @@ int Engine::run() {
   std::thread transmit_thread;
   std::thread receive_thread;
   std::thread status_thread;
+  // The link supervisor runs for every role: it is what re-establishes a dropped
+  // connection, a listener whose caller left, and a caller that started before
+  // its peer, all without a restart.
+  std::thread link_thread([this] { link_supervisor_loop(); });
   if (transmit) {
     transmit_thread = std::thread([this] { transmit_loop(); });
   }
@@ -1030,6 +1098,9 @@ int Engine::run() {
   }
   if (status_thread.joinable()) {
     status_thread.join();
+  }
+  if (link_thread.joinable()) {
+    link_thread.join();
   }
   running_ = false;
 

@@ -68,6 +68,16 @@ bool fail(std::string* error, const std::string& message) {
  */
 constexpr size_t k_loopback_max_messages = 2048;
 
+/**
+ * How long a caller waits for a connect before giving up and retrying.
+ *
+ * Unbounded, an unreachable peer parks the supervisor inside `srt_connect` for
+ * libsrt's own default (seconds to tens of seconds), and a stop request is not
+ * answered until it returns. Bounded, the supervisor retries on its own schedule
+ * and a stop is prompt.
+ */
+constexpr int k_connect_timeout_ms = 4000;
+
 }  // namespace
 
 struct Link::Impl {
@@ -81,6 +91,29 @@ struct Link::Impl {
   std::chrono::steady_clock::time_point opened_at;
   std::string peer;
   std::string mode;
+
+  /**
+   * Guards the socket and the state around it.
+   *
+   * The link is used by two threads at once — the engine's transmit and receive
+   * loops — and, once it can re-establish itself, by a supervisor thread that
+   * closes a dead socket and opens a new one. Without this, a close under a live
+   * send is a use-after-free of the socket. It is held only around the socket
+   * calls, never across the blocking accept or connect, so a reconnection never
+   * parks the loops: they see the link down and fail quietly until it is back.
+   */
+  mutable std::mutex state_mutex;
+
+  /** Drop a dead socket. The caller holds state_mutex. */
+  void mark_down() {
+#if AES67_SRT_WITH_SRT
+    if (socket != SRT_INVALID_SOCK) {
+      srt_close(socket);
+      socket = SRT_INVALID_SOCK;
+    }
+#endif
+    opened = false;
+  }
 
   /**
    * Loopback mode's pipe: what `send_message` has written and `receive_message`
@@ -128,16 +161,13 @@ void Link::close() {
   if (impl_ == nullptr) {
     return;
   }
-#if AES67_SRT_WITH_SRT
-  if (impl_->socket != SRT_INVALID_SOCK) {
+  {
+    std::lock_guard<std::mutex> lock(impl_->state_mutex);
     // Give the peer the courtesy of knowing, and bound how long that may take.
-    srt_close(impl_->socket);
-    impl_->socket = SRT_INVALID_SOCK;
+    impl_->mark_down();
+    impl_->peer.clear();
+    impl_->mode.clear();
   }
-#endif
-  impl_->opened = false;
-  impl_->peer.clear();
-  impl_->mode.clear();
   {
     // Drop whatever the loopback was holding: a closed link that hands back the
     // previous session's messages on reopening would be a baffling bug to chase.
@@ -147,11 +177,16 @@ void Link::close() {
 }
 
 bool Link::is_open() const {
-  return impl_ != nullptr && impl_->opened;
+  if (impl_ == nullptr) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
+  return impl_->opened;
 }
 
 double Link::uptime_seconds() const {
-  if (!is_open()) {
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
+  if (!impl_->opened) {
     return 0.0;
   }
   const auto elapsed = std::chrono::steady_clock::now() - impl_->opened_at;
@@ -159,6 +194,7 @@ double Link::uptime_seconds() const {
 }
 
 void Link::set_receive_timeout_ms(int timeout_ms) {
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
   impl_->receive_timeout_ms = timeout_ms;
 #if AES67_SRT_WITH_SRT
   if (impl_->socket != SRT_INVALID_SOCK) {
@@ -168,6 +204,7 @@ void Link::set_receive_timeout_ms(int timeout_ms) {
 }
 
 void Link::set_send_timeout_ms(int timeout_ms) {
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
 #if AES67_SRT_WITH_SRT
   if (impl_->socket != SRT_INVALID_SOCK) {
     set_int(impl_->socket, SRTO_SNDTIMEO, timeout_ms);
@@ -178,6 +215,7 @@ void Link::set_send_timeout_ms(int timeout_ms) {
 }
 
 void Link::set_nonblocking() {
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
 #if AES67_SRT_WITH_SRT
   if (impl_->socket == SRT_INVALID_SOCK) {
     return;
@@ -191,17 +229,14 @@ void Link::set_abort_flag(std::atomic<bool>* flag) {
 }
 
 std::string Link::peer_description() const {
-  if (!is_open()) {
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
+  if (!impl_->opened) {
     return "(down)";
   }
   return impl_->mode + " " + impl_->peer;
 }
 
 bool Link::open(const Config& config, std::string* error) {
-  if (impl_->opened) {
-    return fail(error, "the link is already open");
-  }
-
   const std::string mode = to_lower(config.link.mode);
   if (mode != "caller" && mode != "listener" && mode != "rendezvous" &&
       mode != "loopback") {
@@ -209,6 +244,16 @@ bool Link::open(const Config& config, std::string* error) {
                 "link.mode: expected caller, listener, rendezvous or loopback; "
                 "got \"" +
                     config.link.mode + "\"");
+  }
+
+  // Drop whatever was there first. `open` is how a listener comes back after a
+  // caller left, and how a caller reconnects after a drop — the supervisor calls
+  // it again rather than the process needing a restart.
+  {
+    std::lock_guard<std::mutex> lock(impl_->state_mutex);
+    impl_->mark_down();
+    impl_->peer.clear();
+    impl_->mode.clear();
   }
 
   // Loopback is answered before the build-without-libsrt refusal below: it is
@@ -223,10 +268,13 @@ bool Link::open(const Config& config, std::string* error) {
       // session's messages.
       impl_->loopback_queue.clear();
     }
-    impl_->mode = mode;
-    impl_->peer = "(in-process)";
-    impl_->opened = true;
-    impl_->opened_at = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(impl_->state_mutex);
+      impl_->mode = mode;
+      impl_->peer = "(in-process)";
+      impl_->opened = true;
+      impl_->opened_at = std::chrono::steady_clock::now();
+    }
     log().write(LogLevel::warn,
                 "the transport is a loopback: nothing leaves this machine");
     return true;
@@ -310,6 +358,11 @@ bool Link::open(const Config& config, std::string* error) {
   if (!set_int(socket, SRTO_RCVTIMEO, impl_->receive_timeout_ms)) {
     return refuse("SRTO_RCVTIMEO", "");
   }
+  // Only the caller and rendezvous connect, and both get a bounded wait.
+  if (mode != "listener" &&
+      !set_int(socket, SRTO_CONNTIMEO, k_connect_timeout_ms)) {
+    return refuse("SRTO_CONNTIMEO", "");
+  }
 
   sockaddr_in local{};
   local.sin_family = AF_INET;
@@ -369,13 +422,17 @@ bool Link::open(const Config& config, std::string* error) {
     return refuse("srt_connect", "");
   }
 
-  impl_->socket = socket;
-  impl_->opened = true;
-  impl_->opened_at = std::chrono::steady_clock::now();
-  impl_->mode = mode;
-  impl_->peer = (mode == "listener")
-                    ? ("accepted on port " + std::to_string(config.link.local_port))
-                    : config.link.peer;
+  {
+    std::lock_guard<std::mutex> lock(impl_->state_mutex);
+    impl_->socket = socket;
+    impl_->opened = true;
+    impl_->opened_at = std::chrono::steady_clock::now();
+    impl_->mode = mode;
+    impl_->peer =
+        (mode == "listener")
+            ? ("accepted on port " + std::to_string(config.link.local_port))
+            : config.link.peer;
+  }
   return true;
 #endif
 }
@@ -393,7 +450,12 @@ bool Link::send_message(const uint8_t* data, size_t size, std::string* error) {
                            "-byte ceiling SRT live mode allows (fragment the "
                            "frame first)");
   }
-  if (impl_->mode == "loopback") {
+  bool loopback = false;
+  {
+    std::lock_guard<std::mutex> lock(impl_->state_mutex);
+    loopback = impl_->mode == "loopback";
+  }
+  if (loopback) {
     std::lock_guard<std::mutex> lock(impl_->loopback_mutex);
     if (impl_->loopback_queue.size() >= k_loopback_max_messages) {
       // Refused rather than queued: a loopback nobody is receiving from is a
@@ -409,13 +471,22 @@ bool Link::send_message(const uint8_t* data, size_t size, std::string* error) {
 #if !AES67_SRT_WITH_SRT
   return fail(error, unavailable_reason());
 #else
-  if (!impl_->opened) {
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
+  if (!impl_->opened || impl_->socket == SRT_INVALID_SOCK) {
     return fail(error, "the link is not open");
   }
   const int sent = srt_sendmsg(impl_->socket, reinterpret_cast<const char*>(data),
                                static_cast<int>(size), -1, false);
   if (sent == SRT_ERROR) {
-    return fail(error, std::string("srt_sendmsg: ") + last_error());
+    const int code = srt_getlasterror(nullptr);
+    const std::string reason = last_error();
+    // A send that is merely not possible *now* is not a broken link. Anything
+    // else is, and the socket goes down with it so the supervisor re-establishes
+    // it rather than every later send failing against a dead handle.
+    if (code != SRT_EASYNCSND && code != SRT_ETIMEOUT) {
+      impl_->mark_down();
+    }
+    return fail(error, std::string("srt_sendmsg: ") + reason);
   }
   if (sent != static_cast<int>(size)) {
     // Documented as impossible in live and file/message mode, which is exactly
@@ -435,7 +506,12 @@ bool Link::receive_message(std::vector<uint8_t>* buffer, bool* timed_out,
   if (timed_out != nullptr) {
     *timed_out = false;
   }
-  if (impl_->mode == "loopback") {
+  bool loopback = false;
+  {
+    std::lock_guard<std::mutex> lock(impl_->state_mutex);
+    loopback = impl_->mode == "loopback";
+  }
+  if (loopback) {
     std::lock_guard<std::mutex> lock(impl_->loopback_mutex);
     if (impl_->loopback_queue.empty()) {
       // Nothing waiting is what `timed_out` is for, and the caller's loop has to
@@ -454,7 +530,8 @@ bool Link::receive_message(std::vector<uint8_t>* buffer, bool* timed_out,
 #if !AES67_SRT_WITH_SRT
   return fail(error, unavailable_reason());
 #else
-  if (!impl_->opened) {
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
+  if (!impl_->opened || impl_->socket == SRT_INVALID_SOCK) {
     return fail(error, "the link is not open");
   }
   char chunk[k_receive_buffer_bytes];
@@ -469,7 +546,12 @@ bool Link::receive_message(std::vector<uint8_t>* buffer, bool* timed_out,
       }
       return false;
     }
-    return fail(error, std::string("srt_recvmsg: ") + last_error());
+    const std::string reason = last_error();
+    // The peer went away, or the socket is no longer usable. Take the link down
+    // so the supervisor re-establishes it instead of every receive failing on a
+    // dead handle for ever.
+    impl_->mark_down();
+    return fail(error, std::string("srt_recvmsg: ") + reason);
   }
   buffer->assign(reinterpret_cast<uint8_t*>(chunk),
                  reinterpret_cast<uint8_t*>(chunk) + received);
@@ -481,7 +563,12 @@ bool Link::stats(LinkStats* out, std::string* error) const {
   if (out == nullptr) {
     return fail(error, "no statistics to fill");
   }
-  if (impl_->mode == "loopback") {
+  bool loopback = false;
+  {
+    std::lock_guard<std::mutex> lock(impl_->state_mutex);
+    loopback = impl_->mode == "loopback";
+  }
+  if (loopback) {
     // Refused rather than filled with zeroes. The rule this class states is that
     // it fails rather than returning plausible numbers, and a loopback has no
     // RTT, no bandwidth and no loss to report — a status page showing 0.0 ms RTT
@@ -493,7 +580,8 @@ bool Link::stats(LinkStats* out, std::string* error) const {
 #if !AES67_SRT_WITH_SRT
   return fail(error, unavailable_reason());
 #else
-  if (!impl_->opened) {
+  std::lock_guard<std::mutex> lock(impl_->state_mutex);
+  if (!impl_->opened || impl_->socket == SRT_INVALID_SOCK) {
     return fail(error, "the link is not open");
   }
   SRT_TRACEBSTATS performance{};
