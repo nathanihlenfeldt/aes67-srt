@@ -26,8 +26,12 @@ The first version with the whole audio path in place.
 - The **link reconnects itself** — a dropped connection, a listener whose caller left, and a caller
   that started first all come back with no restart (issue #21).
 - The **playout crosses a lost frame** instead of silencing for ever (issue #20).
-- **Opus (phase 2)** for a link that cannot carry 74 Mbit/s: per-block codec, eight mono streams,
-  encoders threaded across the cores (~0.23 of a Pi 5 core for 64 channels on live audio).
+- **Opus is the default codec.** A shipped configuration encodes all eight blocks with Opus
+  (~8 Mbit/s per direction on programme material, ~1 Mbit/s on tonal), at 20 ms frames, with the
+  clock and delay line accounting for the codec's frame + 6.5 ms. **Lossless PCM L24** (74 Mbit/s)
+  remains a per-block choice, and the page's **Codec** control switches the whole link either way.
+- **The audio is controllable from the page**: start, stop and restart, with the state and any
+  failure reason shown, and a restart applying a saved configuration change.
 - The wire format's **fragment header** makes a lost SRT message cost one frame rather than the stream
   (ADR 0001, second amendment).
 
