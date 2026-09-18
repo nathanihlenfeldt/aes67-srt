@@ -182,15 +182,20 @@ bool read_blocks(const json& document, Config* config, std::string* reason) {
     if (!entry.is_object()) {
       return fail(reason, path + "expected an object");
     }
-    if (!check_keys(entry, {"index", "channels", "gain_db", "mute"}, path,
-                    reason)) {
+    if (!check_keys(entry,
+                    {"index", "channels", "gain_db", "mute", "codec",
+                     "bitrate_bps_per_channel"},
+                    path, reason)) {
       return false;
     }
     BlockConfig block;
     block.index = position;
     if (!read_int(entry, "index", path, &block.index, reason) ||
         !read_double(entry, "gain_db", path, &block.gain_db, reason) ||
-        !read_bool(entry, "mute", path, &block.mute, reason)) {
+        !read_bool(entry, "mute", path, &block.mute, reason) ||
+        !read_string(entry, "codec", path, &block.codec, reason) ||
+        !read_int(entry, "bitrate_bps_per_channel", path,
+                  &block.bitrate_bps_per_channel, reason)) {
       return false;
     }
     if (!entry.contains("channels")) {
@@ -323,10 +328,13 @@ std::string Config::to_json() const {
 
   json block_array = json::array();
   for (const BlockConfig& block : blocks) {
-    block_array.push_back({{"index", block.index},
-                           {"channels", block.channels},
-                           {"gain_db", block.gain_db},
-                           {"mute", block.mute}});
+    block_array.push_back(
+        {{"index", block.index},
+         {"channels", block.channels},
+         {"gain_db", block.gain_db},
+         {"mute", block.mute},
+         {"codec", block.codec},
+         {"bitrate_bps_per_channel", block.bitrate_bps_per_channel}});
   }
   document["blocks"] = block_array;
 
@@ -374,7 +382,27 @@ bool Config::validate(std::string* reason) const {
                             audio.format + "\"");
   }
   const int one_ms = audio.sample_rate / 1000;
-  if (audio.period_frames != one_ms) {
+  // PCM's period is AES67's 1 ms ptime. An Opus block cannot use 1 ms — Opus's
+  // shortest frame is 2.5 ms — so in codec mode the period *is* the codec frame,
+  // which keeps the engine's one-period-one-frame shape. The frame sizes Opus
+  // accepts at 48 kHz are 2.5/5/10/20/40/60 ms.
+  bool any_opus = false;
+  for (const BlockConfig& block : blocks) {
+    if (to_lower(block.codec) == "opus") {
+      any_opus = true;
+    }
+  }
+  if (any_opus) {
+    const int frame = audio.period_frames;
+    const bool legal = frame == 120 || frame == 240 || frame == 480 ||
+                       frame == 960 || frame == 1920 || frame == 2880;
+    if (!legal) {
+      return fail(reason,
+                  "audio.period_frames: an Opus block needs an Opus frame — "
+                  "120, 240, 480, 960, 1920 or 2880 samples at 48 kHz — got " +
+                      std::to_string(frame));
+    }
+  } else if (audio.period_frames != one_ms) {
     return fail(reason, "audio.period_frames: must be one millisecond at " +
                             std::to_string(audio.sample_rate) + " Hz (" +
                             std::to_string(one_ms) + "), got " +
@@ -510,6 +538,20 @@ bool Config::validate(std::string* reason) const {
     if (block.gain_db < -60.0 || block.gain_db > 24.0) {
       return fail(reason, path + "gain_db: expected -60..+24 dB, got " +
                               std::to_string(block.gain_db));
+    }
+    const std::string codec = to_lower(block.codec);
+    if (codec != "pcm_l24" && codec != "pcm_l16" && codec != "opus") {
+      return fail(reason, path +
+                              "codec: expected \"pcm_l24\", \"pcm_l16\" or "
+                              "\"opus\", got \"" +
+                              block.codec + "\"");
+    }
+    if (codec == "opus" && (block.bitrate_bps_per_channel < 6000 ||
+                            block.bitrate_bps_per_channel > 510000)) {
+      return fail(reason, path +
+                              "bitrate_bps_per_channel: expected 6000..510000 "
+                              "(Opus's per-channel range), got " +
+                              std::to_string(block.bitrate_bps_per_channel));
     }
   }
 

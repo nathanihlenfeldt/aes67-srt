@@ -18,6 +18,16 @@ struct BlockConfig {
   std::vector<int> channels;
   double gain_db = 0.0;
   bool mute = false;
+  /**
+   * The codec this block carries (roadmap phase 2). "pcm_l24" (default),
+   * "pcm_l16", or "opus". Per block, because the wire format's payload type is
+   * per block: a link can carry PCM on the blocks that matter and a codec on the
+   * rest. An Opus block requires the transport period to be the codec frame.
+   */
+  std::string codec = "pcm_l24";
+  /** Opus only: the fixed target bitrate per channel. Quality never changes by
+   *  itself, so there is no adaptive bitrate here (spec decision 6). */
+  int bitrate_bps_per_channel = 128000;
 };
 
 struct AudioConfig {

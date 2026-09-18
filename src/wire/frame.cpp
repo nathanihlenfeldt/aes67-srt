@@ -78,7 +78,11 @@ bool parse_payload_type(uint8_t raw, PayloadType* type) {
 }
 
 bool supported_here(PayloadType type) {
-  return type == PayloadType::pcm_l24 || type == PayloadType::pcm_l16;
+  // The format can carry all three; whether this *build* can decode Opus is the
+  // codec seam's question (src/codec/opus.cpp), and it answers with a reason
+  // rather than misreading the block. AAC-LC has no seam yet.
+  return type == PayloadType::pcm_l24 || type == PayloadType::pcm_l16 ||
+         type == PayloadType::opus;
 }
 
 size_t sample_bytes(PayloadType type) {
@@ -392,10 +396,15 @@ bool encode(const Frame& frame, std::vector<uint8_t>* out, std::string* error) {
     }
     const size_t stride =
         static_cast<size_t>(block.channels) * sample_bytes(block.payload);
-    if (block.data.empty() || block.data.size() % stride != 0) {
+    // A PCM block is a whole number of frames; a codec block is an opaque packet
+    // whose length only the codec knows, so it is bounded but not measured here.
+    if (stride != 0 && (block.data.empty() || block.data.size() % stride != 0)) {
       return fail(error, path + "data: " + count(block.data.size()) +
                              " bytes is not a whole number of " +
                              count(block.channels) + "-channel frames");
+    }
+    if (block.data.empty()) {
+      return fail(error, path + "data: a block carries no payload");
     }
     if (block.data.size() > 0xFFFFFFFFu) {
       return fail(error, path + "data: too large for the format's 32-bit length");
@@ -532,10 +541,15 @@ bool decode(const uint8_t* data, size_t size, Frame* frame, std::string* error) 
     }
     const size_t stride =
         static_cast<size_t>(block.channels) * sample_bytes(block.payload);
-    if (bytes == 0 || bytes % stride != 0) {
+    // PCM must be a whole number of frames; a codec packet is opaque and is only
+    // bounded by the frame, which the check below already does.
+    if (stride != 0 && (bytes == 0 || bytes % stride != 0)) {
       return fail(error, path + "data: " + count(bytes) +
                              " bytes is not a whole number of " +
                              count(block.channels) + "-channel frames");
+    }
+    if (bytes == 0) {
+      return fail(error, path + "data: a block carries no payload");
     }
     if (offset + bytes > payload_end) {
       return fail(error, path + "data: " + count(bytes) +

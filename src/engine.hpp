@@ -11,6 +11,7 @@
 #include "clock/playout_buffer.hpp"
 #include "clock/ratio_control.hpp"
 #include "clock/resampler.hpp"
+#include "codec/opus.hpp"
 #include "config.hpp"
 #include "delay/delay_line.hpp"
 #include "delay/test_signal.hpp"
@@ -155,7 +156,7 @@ class Engine {
    * guarantee the wire format exists to make by construction (ADR 0001).
    */
   bool pack_period(const uint8_t* period, uint64_t sample_position,
-                   wire::Frame* frame, std::string* error) const;
+                   wire::Frame* frame, std::string* error);
 
   /**
    * One frame, joined back into a period of interleaved samples.
@@ -164,8 +165,7 @@ class Engine {
    * cannot fill the device, or a link id that is not ours — rather than writing
    * a partly-filled period that would sound like the far end's fault.
    */
-  bool unpack_frame(const wire::Frame& frame, uint8_t* period,
-                    std::string* error) const;
+  bool unpack_frame(const wire::Frame& frame, uint8_t* period, std::string* error);
 
   /** Frames transmitted, received, and refused as not-ours. */
   uint64_t frames_sent() const;
@@ -291,11 +291,23 @@ class Engine {
    */
   bool write_period_to_device(std::string* error);
 
+  /**
+   * The codec for one block, opened on first use, or null when this block does
+   * not use Opus. One per block, because a block is the unit the codec works on
+   * and eight block encoders can run on the appliance's cores.
+   */
+  codec::OpusBlock* codec_for_block(size_t block_index, bool opus,
+                                    std::string* error);
+
   Config config_;
   std::unique_ptr<audio::AudioBackend> backend_;
   std::unique_ptr<transport::Link> link_;
   wire::Reassembler reassembler_;
   audio::AudioFormat format_;
+  /** One Opus codec per block that uses it, indexed by block index. */
+  std::vector<std::unique_ptr<codec::OpusBlock>> codecs_;
+  /** Scratch for a block's interleaved PCM before/after the codec. */
+  std::vector<uint8_t> codec_pcm_;
 
   /**
    * The clock, in the order it was built: a buffer that holds the sender's audio by

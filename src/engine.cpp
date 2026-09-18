@@ -165,11 +165,54 @@ bool Engine::prepare(const Config& config, std::string* error) {
 
   tx_period_.assign(format_.period_bytes(), 0);
   rx_period_.assign(format_.period_bytes(), 0);
+
+  // Phase 2: open the codec for any block that carries Opus here, so a build
+  // without libopus, or a frame size Opus will not take, is refused at start
+  // rather than discovered mid-stream. codec_pcm_ holds one block's interleaved
+  // PCM on the way in to or out of the codec.
+  codecs_.clear();
+  codecs_.resize(config_.blocks.size());
+  codec_pcm_.assign(
+      wire::k_block_channels * format_.period_frames * format_.sample_bytes, 0);
+  for (size_t index = 0; index < config_.blocks.size(); ++index) {
+    if (to_lower(config_.blocks[index].codec) == "opus" &&
+        codec_for_block(index, true, error) == nullptr) {
+      return false;
+    }
+  }
   return true;
 }
 
+codec::OpusBlock* Engine::codec_for_block(size_t block_index, bool opus,
+                                          std::string* error) {
+  if (block_index >= config_.blocks.size()) {
+    return nullptr;
+  }
+  if (!opus) {
+    return nullptr;
+  }
+  if (codecs_.size() < config_.blocks.size()) {
+    codecs_.resize(config_.blocks.size());
+  }
+  if (codecs_[block_index] == nullptr) {
+    if (!codec::opus_available()) {
+      fail(error, "engine: block " + std::to_string(block_index) +
+                      " carries Opus, and " + codec::opus_unavailable_reason());
+      return nullptr;
+    }
+    auto codec = std::unique_ptr<codec::OpusBlock>(new codec::OpusBlock());
+    if (!codec->open(wire::k_block_channels, format_.sample_rate,
+                     static_cast<int>(format_.period_frames),
+                     config_.blocks[block_index].bitrate_bps_per_channel, error)) {
+      return nullptr;
+    }
+    codecs_[block_index] = std::move(codec);
+  }
+  return codecs_[block_index].get();
+}
+
 bool Engine::pack_period(const uint8_t* period, uint64_t sample_position,
-                         wire::Frame* frame, std::string* error) const {
+                         wire::Frame* frame, std::string* error) {
   if (frame == nullptr) {
     return fail(error, "engine: no frame to fill");
   }
@@ -194,14 +237,7 @@ bool Engine::pack_period(const uint8_t* period, uint64_t sample_position,
                              " channels; a block is exactly 8, because AES67 "
                              "allows no more in one stream");
     }
-    wire::Block wire_block;
-    wire_block.index = static_cast<uint8_t>(block.index);
-    wire_block.payload = payload;
-    wire_block.channels = wire::k_block_channels;
-    wire_block.data.assign(
-        wire::payload_bytes(payload, wire::k_block_channels, format_.period_frames),
-        0);
-
+    // The block's PCM, interleaved as eight channels, whichever codec carries it.
     for (size_t frame_index = 0; frame_index < format_.period_frames;
          ++frame_index) {
       for (size_t slot = 0; slot < block.channels.size(); ++slot) {
@@ -222,8 +258,32 @@ bool Engine::pack_period(const uint8_t* period, uint64_t sample_position,
             format_.sample_bytes;
         const size_t to =
             (frame_index * block.channels.size() + slot) * format_.sample_bytes;
-        std::memcpy(&wire_block.data[to], period + from, format_.sample_bytes);
+        std::memcpy(&codec_pcm_[to], period + from, format_.sample_bytes);
       }
+    }
+
+    wire::Block wire_block;
+    wire_block.index = static_cast<uint8_t>(block.index);
+    wire_block.channels = wire::k_block_channels;
+
+    if (to_lower(block.codec) == "opus") {
+      // The codec seam: the block's PCM goes to Opus, and the payload type says
+      // so, so a receiver that cannot decode it says that rather than guessing.
+      codec::OpusBlock* opus = codec_for_block(block.index, true, error);
+      if (opus == nullptr) {
+        return false;
+      }
+      if (!opus->encode(codec_pcm_.data(), format_.period_frames, &wire_block.data,
+                        error)) {
+        return false;
+      }
+      wire_block.payload = wire::PayloadType::opus;
+    } else {
+      wire_block.payload = payload;
+      const size_t bytes = wire::payload_bytes(payload, wire::k_block_channels,
+                                               format_.period_frames);
+      wire_block.data.assign(codec_pcm_.begin(),
+                             codec_pcm_.begin() + static_cast<long>(bytes));
     }
     packed.blocks.push_back(std::move(wire_block));
   }
@@ -233,7 +293,7 @@ bool Engine::pack_period(const uint8_t* period, uint64_t sample_position,
 }
 
 bool Engine::unpack_frame(const wire::Frame& frame, uint8_t* period,
-                          std::string* error) const {
+                          std::string* error) {
   if (period == nullptr) {
     return fail(error, "engine: no period to fill");
   }
@@ -265,16 +325,35 @@ bool Engine::unpack_frame(const wire::Frame& frame, uint8_t* period,
     }
     filled[block.index] = true;
 
-    const size_t block_sample_bytes = wire::sample_bytes(block.payload);
-    if (block_sample_bytes != format_.sample_bytes) {
-      // Refused rather than reinterpreted: playing 16-bit samples as 24-bit is
-      // not an error any mixer downstream would report, it is just wrong audio.
-      return fail(error, "engine: block " + std::to_string(block.index) +
-                             " carries " + wire::to_string(block.payload) +
-                             ", and this device is " +
-                             (format_.sample_bytes == 2 ? "s16_le" : "s24_3le"));
+    // The block's PCM: either the payload itself (PCM) or what the codec makes of
+    // it (Opus). Both end up as eight interleaved channels in the device format.
+    const uint8_t* block_pcm = nullptr;
+    size_t block_pcm_size = 0;
+    if (block.payload == wire::PayloadType::opus) {
+      codec::OpusBlock* opus = codec_for_block(block.index, true, error);
+      if (opus == nullptr) {
+        return false;
+      }
+      if (!opus->decode(block.data.data(), block.data.size(), format_.period_frames,
+                        codec_pcm_.data(), error)) {
+        return false;
+      }
+      block_pcm = codec_pcm_.data();
+      block_pcm_size = codec_pcm_.size();
+    } else {
+      if (wire::sample_bytes(block.payload) != format_.sample_bytes) {
+        // Refused rather than reinterpreted: playing 16-bit samples as 24-bit is
+        // not an error any mixer downstream would report, it is just wrong audio.
+        return fail(error, "engine: block " + std::to_string(block.index) +
+                               " carries " + wire::to_string(block.payload) +
+                               ", and this device is " +
+                               (format_.sample_bytes == 2 ? "s16_le" : "s24_3le"));
+      }
+      block_pcm = block.data.data();
+      block_pcm_size = block.data.size();
     }
 
+    const size_t stride = format_.sample_bytes;
     const BlockConfig& destination = config_.blocks[block.index];
     for (size_t frame_index = 0; frame_index < format_.period_frames;
          ++frame_index) {
@@ -288,16 +367,15 @@ bool Engine::unpack_frame(const wire::Frame& frame, uint8_t* period,
                                  ", beyond audio.channels " +
                                  std::to_string(format_.channels));
         }
-        const size_t from =
-            (frame_index * block.channels + slot) * block_sample_bytes;
-        if (from + block_sample_bytes > block.data.size()) {
+        const size_t from = (frame_index * block.channels + slot) * stride;
+        if (from + stride > block_pcm_size) {
           return fail(error, "engine: block " + std::to_string(block.index) +
                                  " is shorter than its own header claims");
         }
         const size_t to =
             (frame_index * format_.channels + static_cast<size_t>(device_channel)) *
             format_.sample_bytes;
-        std::memcpy(period + to, &block.data[from], block_sample_bytes);
+        std::memcpy(period + to, block_pcm + from, stride);
       }
     }
   }
@@ -605,10 +683,21 @@ bool Engine::trigger_test_signal(std::string* error) {
 }
 
 double Engine::codec_delay_ms() const {
-  // v1 encodes nothing, so the codec's share of the A/V budget is zero. Phase 2
-  // puts an Opus frame + lookahead here; docs/research/opus.md has the measured
-  // 6.50 ms and the roadmap has the question of whether the test signal survives
-  // the codec at all.
+  // The codec's share of the A/V budget: the frame duration plus the encoder's
+  // lookahead, which is what the operator must subtract when aligning audio with
+  // vision. Zero when nothing is encoded. `OPUS_GET_LOOKAHEAD` is the authority
+  // (measured 6.50 ms at 48 kHz; docs/research/opus.md), and the frame is the
+  // transport period, because in codec mode the period *is* the codec frame.
+  for (size_t index = 0; index < config_.blocks.size(); ++index) {
+    if (to_lower(config_.blocks[index].codec) != "opus") {
+      continue;
+    }
+    double lookahead = 6.5;  // the measured figure, if no codec is open yet
+    if (index < codecs_.size() && codecs_[index] != nullptr) {
+      lookahead = codecs_[index]->lookahead_ms();
+    }
+    return period_ms(format_) + lookahead;
+  }
   return 0.0;
 }
 

@@ -34,10 +34,12 @@ set(WITH_SRT "AUTO" CACHE STRING "Build the SRT transport: ON, OFF or AUTO")
 set(WITH_ALSA "AUTO" CACHE STRING "Build the RAVENNA/ALSA backend: ON, OFF or AUTO")
 set(WITH_SAMPLERATE "AUTO" CACHE STRING "Build the clock's resampler: ON, OFF or AUTO")
 set(WITH_COREAUDIO "AUTO" CACHE STRING "Build the macOS CoreAudio backend: ON, OFF or AUTO")
+set(WITH_OPUS "AUTO" CACHE STRING "Build Opus encoding (roadmap phase 2): ON, OFF or AUTO")
 set_property(CACHE WITH_SRT PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_ALSA PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_SAMPLERATE PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_COREAUDIO PROPERTY STRINGS ON OFF AUTO)
+set_property(CACHE WITH_OPUS PROPERTY STRINGS ON OFF AUTO)
 
 option(WITH_TESTS "Build unit tests" ON)
 option(WITH_WEBUI "Build the web UI (requires npm)" OFF)
@@ -176,6 +178,29 @@ elseif(WITH_COREAUDIO STREQUAL "ON" AND NOT APPLE)
   message(FATAL_ERROR "WITH_COREAUDIO=ON but this is not an Apple platform")
 endif()
 
+# libopus is roadmap phase 2 (docs/research/opus.md). It is optional for the same
+# reason libsrt is: the project must configure and build without it, and the
+# codec seam then refuses an Opus block with a reason instead of misreading it.
+# The target's distribution ships 1.5.2 with the multistream API, which is what
+# this uses.
+set(OPUS_AVAILABLE FALSE)
+if(NOT WITH_OPUS STREQUAL "OFF")
+  find_path(OPUS_INCLUDE_DIR opus/opus_multistream.h
+    HINTS /opt/homebrew/include /usr/local/include)
+  find_library(OPUS_LIBRARY NAMES opus
+    HINTS /opt/homebrew/lib /usr/local/lib)
+  if(OPUS_INCLUDE_DIR AND OPUS_LIBRARY)
+    set(OPUS_AVAILABLE TRUE)
+    message(STATUS "libopus found: ${OPUS_LIBRARY} (phase 2 codec)")
+  elseif(WITH_OPUS STREQUAL "ON")
+    message(FATAL_ERROR
+      "WITH_OPUS=ON but libopus was not found "
+      "(macOS: brew install opus; Debian/Ubuntu: apt install libopus-dev)")
+  else()
+    message(STATUS "libopus not found - Opus blocks will be refused")
+  endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # Core library
 #
@@ -194,6 +219,7 @@ set(AES67_SRT_SOURCES
   src/clock/playout_buffer.cpp
   src/clock/ratio_control.cpp
   src/clock/resampler.cpp
+  src/codec/opus.cpp
   src/commissioning.cpp
   src/config.cpp
   src/delay/delay_line.cpp
@@ -232,6 +258,7 @@ target_compile_definitions(aes67-srt-core PUBLIC
   AES67_SRT_WITH_SRT=$<BOOL:${SRT_AVAILABLE}>
   AES67_SRT_WITH_ALSA=$<BOOL:${ALSA_AVAILABLE}>
   AES67_SRT_WITH_COREAUDIO=$<BOOL:${COREAUDIO_AVAILABLE}>
+  AES67_SRT_WITH_OPUS=$<BOOL:${OPUS_AVAILABLE}>
   AES67_SRT_WITH_SAMPLERATE=$<BOOL:${SAMPLERATE_AVAILABLE}>)
 target_link_libraries(aes67-srt-core
   PUBLIC nlohmann_json::nlohmann_json httplib::httplib Threads::Threads)
@@ -268,6 +295,16 @@ if(SAMPLERATE_AVAILABLE)
   message(STATUS "clock: libsamplerate linked from ${SAMPLERATE_LIBRARY}")
 else()
   message(STATUS "clock: built without libsamplerate - the resampler will refuse")
+endif()
+
+# libopus is linked from the commit that introduces the codec seam, so a machine
+# without it fails to build loudly rather than silently skipping the codec tests.
+if(OPUS_AVAILABLE)
+  target_include_directories(aes67-srt-core PRIVATE "${OPUS_INCLUDE_DIR}")
+  target_link_libraries(aes67-srt-core PRIVATE "${OPUS_LIBRARY}")
+  message(STATUS "codec: libopus linked from ${OPUS_LIBRARY} (phase 2)")
+else()
+  message(STATUS "codec: built without libopus - Opus blocks will be refused")
 endif()
 
 # CoreAudio is frameworks, not a library to find, and it is linked only on the

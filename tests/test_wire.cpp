@@ -204,14 +204,34 @@ TEST_CASE(wire_refuses_an_unknown_payload_type) {
 }
 
 TEST_CASE(wire_refuses_a_payload_type_this_build_cannot_decode) {
-  // Opus is a payload type this format defines, and phase 2 will use.  A PCM
-  // build must say so, rather than decode it as if it were PCM.
+  // AAC-LC is a payload type this format defines and no build decodes yet. A
+  // build must say so, rather than decode it as if it were PCM. (Opus was this
+  // test's subject until phase 2 gave it a codec seam; it is carried now, below.)
   std::vector<uint8_t> bytes = encoded(make_frame(1, PayloadType::pcm_l24, 0));
-  bytes[block_offset(0, PayloadType::pcm_l24) + 1] = 2;
+  bytes[block_offset(0, PayloadType::pcm_l24) + 1] = 3;
   fix_checksum(&bytes);
   const std::string error = decode_error(bytes);
-  CHECK(contains(error, "opus"));
+  CHECK(contains(error, "aac-lc"));
   CHECK(contains(error, "not supported by this build"));
+}
+
+TEST_CASE(wire_carries_an_opus_block_as_opaque_bytes) {
+  // The format does not decode Opus, it *carries* it: the block header's length
+  // is the packet's length, and the bytes come back exactly. The codec seam
+  // decides what they mean.
+  Frame frame = make_frame(1, PayloadType::pcm_l24, 0);
+  frame.blocks[0].payload = PayloadType::opus;
+  frame.blocks[0].data.assign(137, 0x5a);  // a stand-in packet, not PCM-sized
+
+  std::vector<uint8_t> out;
+  std::string error;
+  CHECK(aes67_srt::wire::encode(frame, &out, &error));
+
+  Frame parsed;
+  CHECK(aes67_srt::wire::decode(out.data(), out.size(), &parsed, &error));
+  CHECK_EQ(parsed.blocks.size(), static_cast<size_t>(1));
+  CHECK(parsed.blocks[0].payload == PayloadType::opus);
+  CHECK(parsed.blocks[0].data == frame.blocks[0].data);
 }
 
 TEST_CASE(wire_refuses_a_duplicate_block_index) {
@@ -255,7 +275,7 @@ TEST_CASE(wire_refuses_a_frame_it_cannot_encode_and_writes_nothing) {
   CHECK(contains(error, "whole number of"));
 
   Frame codec = make_frame(1, PayloadType::pcm_l24, 0);
-  codec.blocks[0].payload = PayloadType::opus;
+  codec.blocks[0].payload = PayloadType::aac_lc;
   error.clear();
   CHECK(!aes67_srt::wire::encode(codec, &out, &error));
   CHECK(contains(error, "not supported by this build"));

@@ -9,6 +9,7 @@ add_executable(aes67-srt-tests
   test_clock_receive_path.cpp
   test_clock_resampler.cpp
   test_clock_resampler_quality.cpp
+  test_codec.cpp
   test_commissioning.cpp
   test_config.cpp
   test_daemon.cpp

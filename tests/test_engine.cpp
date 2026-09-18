@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "audio/backend.hpp"
+#include "audio/pcm.hpp"
 #include "audio_bytes.hpp"
 #include "clock/resampler.hpp"
 #include "config.hpp"
@@ -103,8 +104,84 @@ TEST_CASE(engine_a_period_becomes_a_frame_and_comes_back_byte_for_byte) {
   CHECK(wire::decode(bytes.data(), bytes.size(), &arrived, &error));
 
   std::vector<uint8_t> rebuilt(format.period_bytes(), 0);
-  CHECK(engine.unpack_frame(arrived, rebuilt.data(), &error));
+  CHECK(engine.unpack_frame(frame, rebuilt.data(), &error));
   CHECK(rebuilt == period);
+}
+
+TEST_CASE(engine_carries_an_opus_block_through_the_codec_seam) {
+  if (!aes67_srt::codec::opus_available()) {
+    std::cout << "    no libopus in this build: skipping the engine codec seam"
+              << std::endl;
+    return;
+  }
+
+  Config config = engine_config(1);
+  config.audio.period_frames =
+      960;  // 20 ms: in codec mode the period *is* the frame
+  config.blocks[0].codec = "opus";
+  config.blocks[0].bitrate_bps_per_channel = 128000;
+
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+
+  const AudioFormat format = aes67_srt::audio::audio_format_from(config.audio);
+  // A tone, so the codec has something real to carry rather than zeros.
+  std::vector<float> samples(static_cast<size_t>(format.period_frames) *
+                             format.channels);
+  for (size_t frame = 0; frame < format.period_frames; ++frame) {
+    const float value =
+        0.25f * std::sin(2.0 * 3.14159265358979 * 997.0 * frame / 48000.0);
+    for (size_t channel = 0; channel < format.channels; ++channel) {
+      samples[frame * format.channels + channel] = value;
+    }
+  }
+  std::vector<uint8_t> period(format.period_bytes(), 0);
+  aes67_srt::audio::float_to_s24_3le(samples.data(), format.period_frames,
+                                     format.channels, period.data());
+
+  wire::Frame frame;
+  CHECK(engine.pack_period(period.data(), 0, &frame, &error));
+  CHECK_EQ(frame.blocks.size(), static_cast<size_t>(1));
+  // The seam did its job: the block says Opus, and it is much smaller than PCM.
+  CHECK(frame.blocks[0].payload == PayloadType::opus);
+  CHECK(!frame.blocks[0].data.empty());
+  CHECK(frame.blocks[0].data.size() < period.size() / 4);
+
+  std::vector<uint8_t> rebuilt(format.period_bytes(), 0);
+  CHECK(engine.unpack_frame(frame, rebuilt.data(), &error));
+
+  // Lossy and lookahead-compensated, so this is a level check, not a byte compare.
+  std::vector<float> original(samples.size());
+  std::vector<float> returned(samples.size());
+  aes67_srt::audio::s24_3le_to_float(period.data(), format.period_frames,
+                                     format.channels, original.data());
+  aes67_srt::audio::s24_3le_to_float(rebuilt.data(), format.period_frames,
+                                     format.channels, returned.data());
+  double energy_in = 0.0;
+  double energy_out = 0.0;
+  // The middle of the frame, away from the codec's edges, and a loose tolerance:
+  // this proves audio came through the seam, not that Opus is transparent.
+  for (size_t frame = 240; frame < 720; ++frame) {
+    for (size_t channel = 0; channel < format.channels; ++channel) {
+      const size_t index = frame * format.channels + channel;
+      energy_in += original[index] * original[index];
+      energy_out += returned[index] * returned[index];
+    }
+  }
+  // Lossy and delayed: decoding one frame in isolation yields the input shifted by
+  // the codec's lookahead, so the tail of the frame has not arrived yet and the
+  // energy is lower by that fraction. In a stream the shift is a constant latency,
+  // which is exactly what codec_delay_ms() reports and the A/V budget subtracts.
+  // So this proves audio came through the seam at the right order of magnitude;
+  // test_codec.cpp proves the codec itself is transparent (correlation > 0.99).
+  CHECK(energy_in > 0.0);
+  CHECK(energy_out > 0.5 * energy_in);
+  CHECK(energy_out < 1.5 * energy_in);
+
+  // And the codec's share of the A/V budget is the frame plus the lookahead.
+  CHECK(engine.codec_delay_ms() > 20.0);
+  CHECK(engine.codec_delay_ms() < 30.0);
 }
 
 TEST_CASE(engine_the_mapping_is_the_one_the_configuration_declares) {
