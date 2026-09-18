@@ -129,12 +129,15 @@ a default that could move. The cost is one extra message per frame: 16 bytes of 
 about 0.2%. Had this been met in the field it would have looked like a mystery — a link that works
 with one channel and fails with eight.
 
-**What the transport therefore has to do** (ticket 07): fragment a frame across several messages,
-and reassemble. The reassembler needs no new format field, because a frame is self-describing — the
+**What the transport therefore has to do** (ticket 07): fragment a frame across several messages, and
+reassemble. ~~The reassembler needs no new format field, because a frame is self-describing — the
 28-byte header gives the block count, and each 8-byte block header gives the length of the payload
-that follows, so the total length is computable as bytes arrive. SRT guarantees ordering, so the
-parser can be a simple accumulator. **The frame format itself is unchanged by all of this**: what a
-message contains was never part of ADR 0001, only what a *frame* contains.
+that follows, so the total length is computable as bytes arrive.~~ **Corrected 2026-09-18: an
+accumulator is not enough, because SRT guarantees order but not completeness.** `TLPKTDROP` drops the
+message that carried a period, leaving a hole a byte counter cannot see; the reassembler then read a
+frame length from the wrong offset and the receiver collapsed (measured: 64 channels fell to 277
+frames/s). Each message now carries an 8-byte fragment header, so a missing fragment is detectable and
+costs one frame. See ADR 0001's second amendment. The frame format's own bytes are unchanged.
 
 ## Latency
 
@@ -296,7 +299,8 @@ a configuration flag. Better to know that before someone assumes a `bonded: true
 | Our decision or assumption | Status after this research |
 |---|---|
 | Own frame format rather than RTP-over-SRT (ADR 0001) | **Holds.** The ceiling applies to *messages*, not frames; the format is untouched |
-| "One frame per SRT message" (ADR 0001) | **Wrong, and corrected** by an amendment to that ADR: a frame spans about seven messages |
+| "One frame per SRT message" (ADR 0001) | **Wrong, and corrected** by an amendment to that ADR: a frame spans about eight messages |
+| Reassembly needs no new field (ADR 0001, first amendment) | **Wrong, and corrected** by the second amendment: SRT orders messages but does not promise they all arrive. Each message carries an 8-byte fragment header so a lost one is visible |
 | `latency_ms: 120` as the default | Confirmed — it is the library's live-mode default |
 | 100–200 ms transport target (decision 7) | Holds, but it is *negotiated* as the maximum of both ends' settings; the UI must show the negotiated value, not ours |
 | Never drop audio, `TLPKTDROP` unused (decision 6) | **Reversed by measurement.** Disabling it head-of-line blocks and kills a 64-channel link after ~2 s. It stays **on**; `pktRcvDrop` counts packets too late to play — zero on a healthy link |

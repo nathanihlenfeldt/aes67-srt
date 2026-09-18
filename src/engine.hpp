@@ -391,6 +391,8 @@ class Engine {
   /** One encode target and one decode source: two threads, two buffers. */
   std::vector<uint8_t> tx_bytes_;
   std::vector<uint8_t> rx_bytes_;
+  /** One outgoing message (fragment header + payload), reused every fragment. */
+  std::vector<uint8_t> tx_message_;
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> running_{false};
   std::string failure_;

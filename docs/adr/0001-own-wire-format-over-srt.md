@@ -99,3 +99,38 @@ and each block header gives the length of the payload after it, so the total is 
 arrive, and SRT guarantees ordering.
 
 See `docs/research/libsrt.md` for the citations, and for the rest of what that research changed.
+
+## Amendment, 2026-09-18: a frame needs a header per message, after all
+
+The amendment above concluded that "reassembly needs no new header field either", on the grounds
+that a frame is self-describing and "SRT guarantees ordering". **The ordering half is true and the
+conclusion is still wrong.** SRT guarantees order but not *completeness*: in live mode a packet that
+arrives after its play time is dropped (`TLPKTDROP`), and the message it belonged to is dropped with
+it. The byte stream then has a hole in it, and a receiver counting bytes cannot see one — it reads a
+frame length from the wrong offset and desynchronises.
+
+**Measured, at 64 channels.** Every message after the missing one was misread: the log filled with
+`checksum ... stored 0` and `magic: not an aes67-srt frame`, the reassembler never resynchronised,
+the playout overran, and the receiver collapsed from ~1000 frames/s to **277** with the SRT buffer
+climbing to 993 ms. An 8-channel frame fits in one message, so this path had never been exercised —
+which is why 8 channels worked and 64 did not.
+
+**Decision: each SRT message begins with an 8-byte fragment header** (`src/wire/frame.hpp`):
+
+```
+0  magic[2]        'A','F'
+2  frame_sequence  uint32 little-endian
+6  index           0-based fragment position
+7  count           fragments in this frame, 1..255
+```
+
+A receiver now sees that a fragment is missing the moment the next one arrives out of sequence: it
+abandons that frame, counts it, and resynchronises on the next frame's first fragment. Loss costs one
+frame, not the stream. This is a **breaking wire-format change** — both ends must run the same
+version — which is acceptable because both ends are ours. The frame's own header is unchanged; the
+fragment header is a transport concern that happens to live in the format, and the format's checksum
+still catches corruption within a frame.
+
+Consequence for the layering: `wire::Reassembler` is now fragment-aware, and the frame length in the
+frame header is no longer how the receiver decides a frame is complete.
+

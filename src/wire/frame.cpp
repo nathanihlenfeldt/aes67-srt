@@ -186,68 +186,154 @@ LengthStatus frame_length(const uint8_t* data, size_t size, size_t* total,
   return LengthStatus::known;
 }
 
-bool next_fragment(const uint8_t* frame, size_t size, size_t* offset,
-                   const uint8_t** chunk, size_t* chunk_size) {
-  if (frame == nullptr || offset == nullptr || chunk == nullptr ||
-      chunk_size == nullptr) {
+void write_fragment_header(uint8_t* out, const FragmentHeader& header) {
+  out[0] = 'A';
+  out[1] = 'F';
+  out[2] = static_cast<uint8_t>(header.frame_sequence & 0xff);
+  out[3] = static_cast<uint8_t>((header.frame_sequence >> 8) & 0xff);
+  out[4] = static_cast<uint8_t>((header.frame_sequence >> 16) & 0xff);
+  out[5] = static_cast<uint8_t>((header.frame_sequence >> 24) & 0xff);
+  out[6] = header.index;
+  out[7] = header.count;
+}
+
+bool read_fragment_header(const uint8_t* data, size_t size,
+                          FragmentHeader* header) {
+  if (data == nullptr || header == nullptr || size < k_fragment_header_bytes) {
+    return false;
+  }
+  if (data[0] != 'A' || data[1] != 'F') {
+    return false;
+  }
+  header->frame_sequence = static_cast<uint32_t>(data[2]) |
+                           (static_cast<uint32_t>(data[3]) << 8) |
+                           (static_cast<uint32_t>(data[4]) << 16) |
+                           (static_cast<uint32_t>(data[5]) << 24);
+  header->index = data[6];
+  header->count = data[7];
+  if (header->count == 0 || header->index >= header->count) {
+    return false;
+  }
+  return true;
+}
+
+size_t fragment_count(size_t size) {
+  if (size == 0) {
+    return 0;
+  }
+  const size_t payload_cap = k_max_message_bytes - k_fragment_header_bytes;
+  const size_t count = (size + payload_cap - 1) / payload_cap;
+  return count > 255 ? 0 : count;
+}
+
+bool next_fragment(const uint8_t* frame, size_t size, uint32_t frame_sequence,
+                   size_t* offset, std::vector<uint8_t>* message) {
+  if (frame == nullptr || offset == nullptr || message == nullptr) {
     return false;
   }
   if (*offset >= size) {
     return false;
   }
+  const size_t payload_cap = k_max_message_bytes - k_fragment_header_bytes;
+  const size_t count = (size + payload_cap - 1) / payload_cap;
+  if (count == 0 || count > 255) {
+    return false;
+  }
+  const size_t index = *offset / payload_cap;
   const size_t remaining = size - *offset;
-  const size_t take =
-      remaining < k_max_message_bytes ? remaining : k_max_message_bytes;
-  *chunk = frame + *offset;
-  *chunk_size = take;
+  const size_t take = remaining < payload_cap ? remaining : payload_cap;
+  message->resize(k_fragment_header_bytes + take);
+  FragmentHeader header;
+  header.frame_sequence = frame_sequence;
+  header.index = static_cast<uint8_t>(index);
+  header.count = static_cast<uint8_t>(count);
+  write_fragment_header(message->data(), header);
+  std::memcpy(message->data() + k_fragment_header_bytes, frame + *offset, take);
   *offset += take;
-  // The last fragment is often well under the maximum, which is correct: a
-  // message boundary is not a frame boundary.
   return true;
+}
+
+void Reassembler::abandon() {
+  buffer_.clear();
+  assembling_ = false;
+  ready_ = false;
+  count_ = 0;
+  next_index_ = 0;
 }
 
 bool Reassembler::feed(const uint8_t* data, size_t size, std::string* error) {
   if (data == nullptr || size == 0) {
     return true;  // nothing to do is not a failure
   }
-  buffer_.insert(buffer_.end(), data, data + size);
+  FragmentHeader header;
+  if (!read_fragment_header(data, size, &header)) {
+    // Not our stream. Give up on the buffer rather than carry a desync forward.
+    abandon();
+    return fail(error, "fragment: not an aes67-srt message");
+  }
+  const uint8_t* payload = data + k_fragment_header_bytes;
+  const size_t payload_size = size - k_fragment_header_bytes;
 
-  if (expected_ == 0) {
-    size_t total = 0;
-    switch (frame_length(buffer_.data(), buffer_.size(), &total, error)) {
-      case LengthStatus::known:
-        expected_ = total;
-        break;
-      case LengthStatus::incomplete:
-        return true;
-      case LengthStatus::invalid:
-        // Not our stream: give up on the buffer rather than carry a desync
-        // forward into every later frame.
-        buffer_.clear();
-        return false;
-    }
+  // A fragment that is not the one expected means its predecessor never arrived
+  // — SRT dropped the message that carried it. The frame cannot be completed, so
+  // give up on it and resync on the next frame's first fragment.
+  if (assembling_ && header.frame_sequence == frame_sequence_ &&
+      header.index != next_index_) {
+    abandon();
+    ++dropped_;
+  }
+  // A new frame's first fragment arriving while a frame is still open says the
+  // same thing: the open one is missing its tail. Count it and start fresh.
+  if (assembling_ && header.frame_sequence != frame_sequence_) {
+    abandon();
+    ++dropped_;
   }
 
-  if (buffer_.size() > expected_) {
-    // More than one frame, or a frame plus the start of the next. That is not an
-    // error: take_frame extracts exactly one frame and re-reads the remainder. A
-    // message that crosses a boundary costs nothing to tolerate, and being strict
-    // here would only make a future sender change look like corruption.
+  if (!assembling_) {
+    if (header.index != 0) {
+      // We joined this frame part-way through, so it can never be whole. There is
+      // nothing to keep until a frame starts at its first fragment.
+      return true;
+    }
+    assembling_ = true;
+    frame_sequence_ = header.frame_sequence;
+    count_ = header.count;
+    next_index_ = 0;
+    buffer_.clear();
+    ready_ = false;
+  } else if (header.count != count_) {
+    // The fragment count changed mid-frame: not something we sent.
+    abandon();
+    return fail(error, "fragment: the count changed within a frame");
+  }
+
+  if (header.index != next_index_) {
+    // The resync above removed every way to get here, but keep it explicit.
     return true;
+  }
+  buffer_.insert(buffer_.end(), payload, payload + payload_size);
+  ++next_index_;
+  if (next_index_ == count_) {
+    ready_ = true;
+    assembling_ = false;
   }
   return true;
 }
 
 bool Reassembler::frame_ready() const {
-  return expected_ != 0 && buffer_.size() >= expected_;
+  return ready_;
 }
 
 size_t Reassembler::frame_size() const {
-  return frame_ready() ? expected_ : 0;
+  return ready_ ? buffer_.size() : 0;
 }
 
 size_t Reassembler::buffered() const {
   return buffer_.size();
+}
+
+size_t Reassembler::dropped() const {
+  return dropped_;
 }
 
 bool Reassembler::take_frame(std::vector<uint8_t>* frame, std::string* error) {
@@ -257,19 +343,12 @@ bool Reassembler::take_frame(std::vector<uint8_t>* frame, std::string* error) {
   if (!frame_ready()) {
     return fail(error, "no complete frame is waiting");
   }
-  frame->assign(buffer_.begin(), buffer_.begin() + static_cast<long>(expected_));
-  buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<long>(expected_));
-  expected_ = 0;
-
-  // Anything already buffered belongs to the next frame, so let it decide its own
-  // length now rather than on the next feed.
-  if (!buffer_.empty()) {
-    size_t total = 0;
-    if (frame_length(buffer_.data(), buffer_.size(), &total, error) ==
-        LengthStatus::known) {
-      expected_ = total;
-    }
-  }
+  *frame = std::move(buffer_);
+  buffer_.clear();
+  ready_ = false;
+  count_ = 0;
+  next_index_ = 0;
+  assembling_ = false;
   return true;
 }
 

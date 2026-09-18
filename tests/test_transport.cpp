@@ -76,11 +76,10 @@ std::vector<uint8_t> make_frame_bytes(size_t blocks, uint8_t seed) {
 bool send_frame_as_messages(Link* link, const std::vector<uint8_t>& frame,
                             std::string* error) {
   size_t offset = 0;
-  const uint8_t* chunk = nullptr;
-  size_t chunk_size = 0;
-  while (aes67_srt::wire::next_fragment(frame.data(), frame.size(), &offset, &chunk,
-                                        &chunk_size)) {
-    if (!link->send_message(chunk, chunk_size, error)) {
+  std::vector<uint8_t> message;
+  while (aes67_srt::wire::next_fragment(frame.data(), frame.size(), 0, &offset,
+                                        &message)) {
+    if (!link->send_message(message.data(), message.size(), error)) {
       return false;
     }
   }
@@ -219,11 +218,10 @@ TEST_CASE(transport_loops_back_with_no_socket_and_no_libsrt) {
   CHECK(contains(link.peer_description(), "loopback"));
   CHECK(link.uptime_seconds() >= 0.0);
 
-  // One small frame first — one block fits in a single message — so the
-  // queued-then-delivered property is asserted without a reassembler in the way.
-  const std::vector<uint8_t> small = make_frame_bytes(1, 0x11);
-  CHECK(small.size() < aes67_srt::wire::k_max_message_bytes);
-  CHECK(send_frame_as_messages(&link, small, &error));
+  // One small message, sent directly, so the queued-then-delivered property is
+  // asserted with no framing and no reassembler in the way.
+  const std::vector<uint8_t> small{1, 2, 3, 4, 5};
+  CHECK(link.send_message(small.data(), small.size(), &error));
 
   std::vector<uint8_t> message;
   bool timed_out = false;

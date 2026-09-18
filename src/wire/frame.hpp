@@ -149,26 +149,62 @@ LengthStatus frame_length(const uint8_t* data, size_t size, size_t* total,
 constexpr size_t k_max_message_bytes = 1316;
 
 /**
- * Slice a frame into messages of at most k_max_message_bytes, without allocating.
+ * Bytes of the fragment header every SRT message begins with.
  *
- * Start with `*offset = 0` and call until it returns false. The slices are views
- * into the caller's buffer: at a thousand frames a second, seven fresh vectors
- * per frame is churn for nothing.
+ *   0  magic[2]         'A','F'
+ *   2  frame_sequence   uint32 little-endian: which frame this fragment is from
+ *   6  index            0-based fragment position within the frame
+ *   7  count            fragments in this frame, 1..255
+ *
+ * It exists because SRT message mode does not promise a gapless stream: a packet
+ * that arrives too late is dropped (`TLPKTDROP`), and the message carrying it
+ * goes with it. Counting bytes alone cannot see that, so the reassembler read a
+ * bogus frame length and collapsed — measured at 64 channels as 277 frames/s and
+ * a receive buffer climbing to 993 ms. With a sequence and an index per message,
+ * a missing fragment is detectable and only its own frame is lost.
  */
-bool next_fragment(const uint8_t* frame, size_t size, size_t* offset,
-                   const uint8_t** chunk, size_t* chunk_size);
+constexpr size_t k_fragment_header_bytes = 8;
+
+/** What a fragment header says. */
+struct FragmentHeader {
+  uint32_t frame_sequence = 0;
+  uint8_t index = 0;
+  uint8_t count = 1;
+};
+
+/** Write a fragment header into |out| (at least k_fragment_header_bytes). */
+void write_fragment_header(uint8_t* out, const FragmentHeader& header);
+
+/** Read a fragment header from |data|. False if it is not one of ours. */
+bool read_fragment_header(const uint8_t* data, size_t size, FragmentHeader* header);
+
+/** How many fragments a frame of |size| bytes becomes (0 if it cannot be sent). */
+size_t fragment_count(size_t size);
+
+/**
+ * Build the next message of a frame: a fragment header then up to the payload cap.
+ *
+ * Start with `*offset = 0` and call until it returns false. The message is
+ * written into |message|, which the caller reuses: at a thousand frames a second,
+ * eight fresh vectors per frame is churn for nothing. |frame_sequence| is the
+ * frame's own sequence, carried so the receiver can tell frames apart.
+ */
+bool next_fragment(const uint8_t* frame, size_t size, uint32_t frame_sequence,
+                   size_t* offset, std::vector<uint8_t>* message);
 
 /**
  * Reassembles frames from the messages an SRT receive returns.
  *
- * A frame arrives across several messages, and the boundaries fall wherever they
- * fall — mid-header, mid-payload. This owns that accumulation, and it is
- * deliberately free of I/O so it can be tested without a socket: the transport
- * moves bytes, this knows what the bytes mean.
+ * A frame arrives across several messages, each with a fragment header. This owns
+ * that accumulation and, unlike a byte counter, it can see a missing message:
+ * when a fragment is absent the frame it belonged to is abandoned and counted,
+ * and assembly resumes on the next frame's first fragment. It is deliberately
+ * free of I/O so it can be tested without a socket: the transport moves bytes,
+ * this knows what the bytes mean.
  */
 class Reassembler {
  public:
-  /** Add one received message. Returns false on a stream that is not ours. */
+  /** Add one received message. Returns false on a message that is not ours. */
   bool feed(const uint8_t* data, size_t size, std::string* error);
 
   /** True when a whole frame is waiting to be taken. */
@@ -183,9 +219,19 @@ class Reassembler {
   /** Bytes buffered so far, waiting for the rest of a frame. */
   size_t buffered() const;
 
+  /** Frames given up because a fragment never arrived. */
+  size_t dropped() const;
+
  private:
+  void abandon();
+
   std::vector<uint8_t> buffer_;
-  size_t expected_ = 0;  // 0 until the header has told us how long this frame is
+  uint32_t frame_sequence_ = 0;  // the frame being assembled
+  uint8_t count_ = 0;            // fragments that frame has (0: none in progress)
+  uint8_t next_index_ = 0;       // the fragment we expect next
+  bool assembling_ = false;
+  bool ready_ = false;
+  size_t dropped_ = 0;
 };
 
 /**

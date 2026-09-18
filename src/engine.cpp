@@ -327,11 +327,9 @@ bool Engine::step_transmit(std::string* error) {
   }
 
   size_t offset = 0;
-  const uint8_t* chunk = nullptr;
-  size_t chunk_size = 0;
-  while (wire::next_fragment(tx_bytes_.data(), tx_bytes_.size(), &offset, &chunk,
-                             &chunk_size)) {
-    if (!link_->send_message(chunk, chunk_size, error)) {
+  while (wire::next_fragment(tx_bytes_.data(), tx_bytes_.size(), frame.sequence,
+                             &offset, &tx_message_)) {
+    if (!link_->send_message(tx_message_.data(), tx_message_.size(), error)) {
       return false;
     }
   }
@@ -376,6 +374,7 @@ void Engine::receive_into_buffer(std::string* error) {
     // the drain does *not* do is decide how much audio is played: that is the
     // buffer's, one period per turn, for ever, whatever the link is doing.
     bool timed_out = false;
+    bool have_frame = false;
     for (int received = 0; received < k_max_messages_per_period; ++received) {
       if (!link_->receive_message(&message_, &timed_out, error)) {
         if (!timed_out) {
@@ -389,9 +388,16 @@ void Engine::receive_into_buffer(std::string* error) {
         refuse(std::string("a stream that is not this format: ") +
                (error != nullptr ? *error : "unknown"));
       }
+      // Only the message carrying a frame's last fragment completes it, and the
+      // reassembler holds one complete frame at a time: take it before feeding
+      // more, so a burst of messages cannot outrun it.
+      if (reassembler_.frame_ready()) {
+        have_frame = true;
+        break;
+      }
     }
 
-    if (!reassembler_.frame_ready()) {
+    if (!have_frame) {
       return;  // nothing complete this turn; the rest of the turn plays what we
                // have
     }

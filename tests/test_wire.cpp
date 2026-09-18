@@ -323,14 +323,6 @@ TEST_CASE(wire_knows_a_frame_length_before_all_of_it_has_arrived) {
   CHECK(length_of(bytes, last_block_header_ends, &total) == LengthStatus::known);
   CHECK_EQ(total, bytes.size());
   CHECK(total > last_block_header_ends);  // i.e. the payloads are still to come
-
-  // Knowing the length is not the same as having the frame. The reassembler
-  // answers the second question, and it says no until the last byte lands.
-  aes67_srt::wire::Reassembler reassembler;
-  std::string error;
-  CHECK(reassembler.feed(bytes.data(), last_block_header_ends, &error));
-  CHECK(!reassembler.frame_ready());
-  CHECK_EQ(reassembler.buffered(), last_block_header_ends);
 }
 
 TEST_CASE(wire_never_measures_a_prefix_shorter_than_a_header) {
@@ -394,15 +386,15 @@ TEST_CASE(wire_gives_up_on_an_absurd_length_rather_than_buffering_forever) {
 
 namespace {
 
-/** Every message a frame is sent as. */
-std::vector<std::vector<uint8_t>> fragments_of(const std::vector<uint8_t>& frame) {
+/** Every message a frame is sent as, headers and all. */
+std::vector<std::vector<uint8_t>> fragments_of(const std::vector<uint8_t>& frame,
+                                               uint32_t sequence = 0) {
   std::vector<std::vector<uint8_t>> messages;
   size_t offset = 0;
-  const uint8_t* chunk = nullptr;
-  size_t chunk_size = 0;
-  while (aes67_srt::wire::next_fragment(frame.data(), frame.size(), &offset, &chunk,
-                                        &chunk_size)) {
-    messages.emplace_back(chunk, chunk + chunk_size);
+  std::vector<uint8_t> message;
+  while (aes67_srt::wire::next_fragment(frame.data(), frame.size(), sequence,
+                                        &offset, &message)) {
+    messages.push_back(message);
   }
   return messages;
 }
@@ -412,24 +404,30 @@ std::vector<std::vector<uint8_t>> fragments_of(const std::vector<uint8_t>& frame
 TEST_CASE(wire_slices_a_frame_into_messages_srt_will_accept) {
   const std::vector<uint8_t> bytes =
       encoded(make_frame(8, PayloadType::pcm_l24, 0));
-  const std::vector<std::vector<uint8_t>> messages = fragments_of(bytes);
+  const std::vector<std::vector<uint8_t>> messages = fragments_of(bytes, 7);
 
-  // 9312 bytes at 1316 per message: seven full messages and a short eighth.
+  // 9312 bytes at 1308 payload bytes per message (1316 less the header) is still
+  // eight messages.
   CHECK_EQ(messages.size(), static_cast<size_t>(8));
 
-  size_t total = 0;
-  for (const std::vector<uint8_t>& message : messages) {
-    CHECK(message.size() > 0);
-    CHECK(message.size() <= aes67_srt::wire::k_max_message_bytes);
-    total += message.size();
-  }
-  CHECK_EQ(total, bytes.size());
-
-  // The slices are views, so joining them has to reproduce the frame exactly.
   std::vector<uint8_t> joined;
-  for (const std::vector<uint8_t>& message : messages) {
-    joined.insert(joined.end(), message.begin(), message.end());
+  for (size_t index = 0; index < messages.size(); ++index) {
+    CHECK(messages[index].size() > 0);
+    CHECK(messages[index].size() <= aes67_srt::wire::k_max_message_bytes);
+    // Every message starts with a fragment header naming its frame and its place
+    // in it, which is what lets the far end see a message go missing.
+    aes67_srt::wire::FragmentHeader header;
+    CHECK(aes67_srt::wire::read_fragment_header(messages[index].data(),
+                                                messages[index].size(), &header));
+    CHECK_EQ(header.frame_sequence, static_cast<uint32_t>(7));
+    CHECK_EQ(static_cast<int>(header.index), static_cast<int>(index));
+    CHECK_EQ(static_cast<int>(header.count), static_cast<int>(messages.size()));
+    joined.insert(
+        joined.end(),
+        messages[index].begin() + aes67_srt::wire::k_fragment_header_bytes,
+        messages[index].end());
   }
+  // Strip the headers and the frame is reproduced exactly.
   CHECK(joined == bytes);
 }
 
@@ -471,25 +469,61 @@ TEST_CASE(wire_reassembly_waits_for_the_last_fragment) {
   CHECK(reassembler.frame_ready());
 }
 
-TEST_CASE(wire_tolerates_two_frames_arriving_in_one_message) {
+TEST_CASE(wire_a_lost_fragment_loses_only_its_own_frame) {
   const std::vector<uint8_t> first =
-      encoded(make_frame(1, PayloadType::pcm_l16, 11));
+      encoded(make_frame(8, PayloadType::pcm_l24, 11));
   const std::vector<uint8_t> second =
       encoded(make_frame(1, PayloadType::pcm_l16, 22));
-  std::vector<uint8_t> both = first;
-  both.insert(both.end(), second.begin(), second.end());
+
+  // What TLPKTDROP does on a lossy link: the message carrying one fragment never
+  // arrives. Counting bytes cannot see that; the fragment header can.
+  const std::vector<std::vector<uint8_t>> messages = fragments_of(first, 1);
+  CHECK_EQ(messages.size(), static_cast<size_t>(8));
 
   aes67_srt::wire::Reassembler reassembler;
   std::string error;
-  CHECK(reassembler.feed(both.data(), both.size(), &error));
-  CHECK(reassembler.frame_ready());
+  for (size_t index = 0; index < messages.size(); ++index) {
+    if (index == 3) {
+      continue;  // dropped
+    }
+    CHECK(reassembler.feed(messages[index].data(), messages[index].size(), &error));
+  }
+  CHECK(!reassembler.frame_ready());
+  CHECK_EQ(reassembler.dropped(), static_cast<size_t>(1));
 
+  // The next frame is untouched by the loss and comes out whole.
+  for (const std::vector<uint8_t>& message : fragments_of(second, 2)) {
+    CHECK(reassembler.feed(message.data(), message.size(), &error));
+  }
+  CHECK(reassembler.frame_ready());
   std::vector<uint8_t> taken;
   CHECK(reassembler.take_frame(&taken, &error));
-  CHECK(taken == first);
+  CHECK(taken == second);
+}
 
-  // The surplus is not thrown away, and the next frame is already complete.
+TEST_CASE(wire_a_lost_fragment_at_the_end_of_a_frame_is_noticed) {
+  const std::vector<uint8_t> first =
+      encoded(make_frame(8, PayloadType::pcm_l24, 11));
+  const std::vector<uint8_t> second =
+      encoded(make_frame(8, PayloadType::pcm_l24, 22));
+
+  const std::vector<std::vector<uint8_t>> first_messages = fragments_of(first, 1);
+  aes67_srt::wire::Reassembler reassembler;
+  std::string error;
+  for (size_t index = 0; index + 1 < first_messages.size(); ++index) {
+    CHECK(reassembler.feed(first_messages[index].data(),
+                           first_messages[index].size(), &error));
+  }
+  CHECK(!reassembler.frame_ready());
+
+  // The last fragment never arrives; the next frame's first fragment is the
+  // signal that the old frame is dead.
+  for (const std::vector<uint8_t>& message : fragments_of(second, 2)) {
+    CHECK(reassembler.feed(message.data(), message.size(), &error));
+  }
+  CHECK_EQ(reassembler.dropped(), static_cast<size_t>(1));
   CHECK(reassembler.frame_ready());
+  std::vector<uint8_t> taken;
   CHECK(reassembler.take_frame(&taken, &error));
   CHECK(taken == second);
 }
@@ -499,7 +533,7 @@ TEST_CASE(wire_reassembly_gives_up_on_a_stream_that_is_not_ours) {
   std::string error;
   const std::vector<uint8_t> garbage(200, 0x5a);
   CHECK(!reassembler.feed(garbage.data(), garbage.size(), &error));
-  CHECK(contains(error, "magic"));
+  CHECK(contains(error, "fragment"));
   // The desync is dropped rather than carried into every later frame.
   CHECK_EQ(reassembler.buffered(), static_cast<size_t>(0));
   CHECK(!reassembler.frame_ready());
