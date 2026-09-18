@@ -194,6 +194,28 @@ Still open, and they need ears rather than a bench:
 4. **What 64 and 128 kbit/s per channel sound like on programme material.** A listening decision, not
    a specification.
 
+## Phase 2, first slice: one block, built and proved on the Pi (2026-09-18)
+
+The seam is in (`src/codec/opus.cpp`, commit `40e7511`): `OpusBlock` uses the multistream API with
+**eight mono streams and no coupling**, s24_3le in and out, in-band FEC off, and reports
+`OPUS_GET_LOOKAHEAD`. The wire format's per-block payload type was already reserved for it, so the
+format did not change. Per-block `codec` and `bitrate_bps_per_channel` are configuration, and **in
+codec mode the transport period *is* the Opus frame** (2.5–60 ms): a 1 ms period with an Opus block is
+refused, because Opus cannot take one.
+
+Proved on the target, Raspberry Pi 5 with libopus 1.5.2:
+
+- the whole test suite passes on the Pi (175 tests, codec tests included), and a `WITH_OPUS=OFF`
+  build also builds and passes with the codec tests skipping cleanly;
+- a one-block Opus loopback on the Pi: 502 frames sent, 500 received, 0 refused;
+- **one block over the real Pi → Mac link**: 20 ms frames at the expected 50/s, **0 refused**, delay
+  100 ms. The measured rate was ~49 kbit/s because both ends ran the *null* backend, so Opus was
+  encoding silence — a real-audio bitrate needs the RAVENNA device and is still to be taken.
+
+Not done, and they are the rest of phase 2: eight blocks, threading the encoders (the ROADMAP's hard
+requirement at 43% of a Pi core unthreaded), a real-audio bitrate, and the coupling and bitrate
+listening tests below.
+
 ## What this changes in the roadmap
 
 `docs/ROADMAP.md` said "Opus first. Royalty-free, and it is native at 48 kHz… 2.5–60 ms frames".
