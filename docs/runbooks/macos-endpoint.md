@@ -6,6 +6,38 @@ interop matrix — and it has no AES67, no PTP and no daemon (ADR 0004).
 
 What has been proved, and what has not, is in `docs/research/macos-endpoint.md` and on issue #19.
 
+## Installing it on a studio Mac
+
+The endpoint installs **for the current user, with no sudo**, and a LaunchAgent starts it at login and
+restarts it if it exits:
+
+```
+cmake -S . -B build && cmake --build build --target aes67-srt-mac
+./scripts/install-mac.sh --peer <appliance-ip>:<port> --passphrase <shared-secret> --role rx
+```
+
+That copies the binary and config to `~/Library/Application Support/aes67-srt`, writes
+`~/Library/LaunchAgents/com.aes67-srt.endpoint.plist`, loads it, and logs to
+`~/Library/Logs/aes67-srt/endpoint.log`. `scripts/uninstall-mac.sh` reverses it; add `--purge` to
+remove the config as well.
+
+**BlackHole is the one step that needs sudo** — it is a CoreAudio driver, not something this installer
+can place for you. Install BlackHole 64ch from <https://existential.audio/blackhole/>, then
+`sudo killall coreaudiod` so the device appears. The installer checks for it and says so if it is
+missing.
+
+**An unsigned build and Gatekeeper.** A binary *downloaded* is marked quarantined and macOS refuses to
+run it. Build it on the machine, or clear the mark:
+
+```
+xattr -d com.apple.quarantine ~/Library/Application\ Support/aes67-srt/aes67-srt-mac
+```
+
+A signed, notarized build removes this step; that is issue #30, not done.
+
+**Then, in the DAW**, record from BlackHole 64ch. Stream channel 1 is input 1, and the live site audio
+is on inputs 1–8.
+
 ## What you need
 
 - **Wired Ethernet on the Mac.** Not Wi-Fi: 64 channels is ~74 Mbit/s per direction and Wi-Fi drops
