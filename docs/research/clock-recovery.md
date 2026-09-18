@@ -557,3 +557,22 @@ handoff's "costs nothing extra": it costs a device.
 What the bench *can* still measure is throughput, delivery, the receive path and the transport's
 behaviour, and that is what these runs were for. It cannot measure the clock.
 
+## A lost frame starves the playout, 2026-09-18 (deferred, issue #20)
+
+Measured on the Pi → Mac path at 64 channels with the studio Mac on Wi-Fi, and it is a *playout* fault
+rather than a transport one. The receiver starts healthy — `delay 111 ms`, 11,609 frames received, 0
+refused — then one loss burst (SRT dropped 3,113 packets as too late) leaves a hole in the sender's
+sample timeline. `PlayoutBuffer::take` refuses while `head_ >= contiguous_end_`
+(`src/clock/playout_buffer.cpp:168`), and `advance_contiguous()` stops at the hole, so the head never
+crosses it: `delay` falls to 0 and `silence_periods` climbs at ~1000/s for ever, while
+`frames_received` keeps advancing and the link keeps delivering 77 Mbit/s. The head only jumps when an
+arrival is a whole buffer capacity ahead, so **a hole smaller than the capacity is never skipped**.
+
+**A lossless link never makes a hole, so this does not appear on localhost or a wired path** — which is
+why it was deferred (issue #20) rather than fixed in the same session. The fix is to let the playout
+cross a hole it can prove is permanent (a later period already held means SRT, which delivers in
+order, will never fill it): advance the head, play silence for the lost periods, count them. That is
+forward-only and consistent with ADR 0003; it needs an ADR 0003 note and tests for a hole mid-stream
+and at the buffer edge. It matters because an unpredictable internet is an explicit design assumption,
+and today one hole silences the receiver permanently.
+
