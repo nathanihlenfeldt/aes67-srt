@@ -244,6 +244,59 @@ TEST_CASE(engine_a_one_block_link_is_the_dev_configuration_shape) {
   CHECK(rebuilt == period);
 }
 
+TEST_CASE(engine_carries_eight_opus_blocks_through_the_pool) {
+  if (!aes67_srt::codec::opus_available()) {
+    std::cout << "    no libopus in this build: skipping the eight-block codec seam"
+              << std::endl;
+    return;
+  }
+
+  Config config = engine_config(8);
+  config.audio.period_frames = 960;  // 20 ms
+  for (aes67_srt::BlockConfig& block : config.blocks) {
+    block.codec = "opus";
+    block.bitrate_bps_per_channel = 128000;
+  }
+
+  Engine engine;
+  std::string error;
+  CHECK(engine.prepare(config, &error));
+
+  const AudioFormat format = aes67_srt::audio::audio_format_from(config.audio);
+  std::vector<float> samples(static_cast<size_t>(format.period_frames) *
+                             format.channels);
+  for (size_t frame = 0; frame < format.period_frames; ++frame) {
+    const float value =
+        0.25f * std::sin(2.0 * 3.14159265358979 * 997.0 * frame / 48000.0);
+    for (size_t channel = 0; channel < format.channels; ++channel) {
+      samples[frame * format.channels + channel] = value;
+    }
+  }
+  std::vector<uint8_t> period(format.period_bytes(), 0);
+  aes67_srt::audio::float_to_s24_3le(samples.data(), format.period_frames,
+                                     format.channels, period.data());
+
+  wire::Frame frame;
+  CHECK(engine.pack_period(period.data(), 0, &frame, &error));
+  CHECK_EQ(frame.blocks.size(), static_cast<size_t>(8));
+  for (const wire::Block& block : frame.blocks) {
+    // Every block went through the pool and came back as an Opus packet.
+    CHECK(block.payload == PayloadType::opus);
+    CHECK(!block.data.empty());
+    CHECK(block.data.size() < period.size() / 8 / 4);
+  }
+
+  std::vector<uint8_t> rebuilt(format.period_bytes(), 0);
+  CHECK(engine.unpack_frame(frame, rebuilt.data(), &error));
+  // Not silence: the eight encodes and decodes carried audio.
+  bool any = false;
+  for (uint8_t byte : rebuilt) {
+    any = any || byte != 0;
+  }
+  CHECK(any);
+  CHECK(engine.codec_delay_ms() > 20.0);
+}
+
 TEST_CASE(engine_refuses_a_frame_this_link_does_not_expect) {
   const Config config = engine_config(8);
   Engine engine;

@@ -212,9 +212,26 @@ Proved on the target, Raspberry Pi 5 with libopus 1.5.2:
   100 ms. The measured rate was ~49 kbit/s because both ends ran the *null* backend, so Opus was
   encoding silence — a real-audio bitrate needs the RAVENNA device and is still to be taken.
 
-Not done, and they are the rest of phase 2: eight blocks, threading the encoders (the ROADMAP's hard
-requirement at 43% of a Pi core unthreaded), a real-audio bitrate, and the coupling and bitrate
+Not done, and they are the rest of phase 2: a real-audio bitrate, and the coupling and bitrate
 listening tests below.
+
+## Eight blocks, and the encoders threaded (2026-09-18)
+
+The ROADMAP makes threading a *requirement*, not an optimisation: 43% of a Pi core to encode 64
+channels on one thread is a CPU-bound appliance under load. `ParallelFor` (`src/parallel_for.cpp`)
+runs the block encodes across `hardware_concurrency() - 1` workers plus the calling thread, started
+once at `prepare` and reused per period; a single-block link runs inline and never starts a thread.
+The receive-side decodes stay sequential for now (14.97% of a core, not the bottleneck).
+
+Proved on the Pi: eight Opus blocks on the null backend ran 1,201 frames sent / 1,200 received with
+**0 refused** and 14 threads in the process (the pool's included). A `WITH_OPUS=` build with and
+without libopus both pass (179 tests on the Mac; the same suite passes on the Pi).
+
+**The CPU saving is not measured, and the bench cannot measure it.** The null backend emits digital
+silence, and Opus does almost no work on silence — the process sat at ~0.1% of a core either way.
+The 43% figure comes from the probe with a **tone**, and until the appliance's own transmit path runs
+on the RAVENNA device with programme material, the threaded number is unmeasured. That is the same
+hardware-session gap the clock module has; recorded here rather than claimed.
 
 ## What this changes in the roadmap
 

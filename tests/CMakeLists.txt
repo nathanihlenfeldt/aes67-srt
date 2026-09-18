@@ -18,6 +18,7 @@ add_executable(aes67-srt-tests
   test_float_ring.cpp
   test_http.cpp
   test_main.cpp
+  test_parallel_for.cpp
   test_test_signal.cpp
   test_transport.cpp
   test_wire.cpp)

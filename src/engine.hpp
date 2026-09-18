@@ -15,6 +15,7 @@
 #include "config.hpp"
 #include "delay/delay_line.hpp"
 #include "delay/test_signal.hpp"
+#include "parallel_for.hpp"
 #include "transport/link.hpp"
 #include "wire/frame.hpp"
 
@@ -306,8 +307,14 @@ class Engine {
   audio::AudioFormat format_;
   /** One Opus codec per block that uses it, indexed by block index. */
   std::vector<std::unique_ptr<codec::OpusBlock>> codecs_;
-  /** Scratch for a block's interleaved PCM before/after the codec. */
+  /** Per-block interleaved PCM on the way in to the transmit codecs. One buffer
+   *  per block, because the encodes run in parallel. */
+  std::vector<std::vector<uint8_t>> tx_block_pcm_;
+  /** Scratch for a block's decoded PCM on the receive side (sequential). */
   std::vector<uint8_t> codec_pcm_;
+  /** The block encoders' threads: eight Opus encodes on one thead is 43% of a
+   *  Pi core (docs/research/opus.md), so they are spread across the cores. */
+  ParallelFor encoders_;
 
   /**
    * The clock, in the order it was built: a buffer that holds the sender's audio by

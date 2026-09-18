@@ -168,17 +168,41 @@ bool Engine::prepare(const Config& config, std::string* error) {
 
   // Phase 2: open the codec for any block that carries Opus here, so a build
   // without libopus, or a frame size Opus will not take, is refused at start
-  // rather than discovered mid-stream. codec_pcm_ holds one block's interleaved
-  // PCM on the way in to or out of the codec.
+  // rather than discovered mid-stream. codec_pcm_ holds one block's decoded PCM
+  // on the receive side; tx_block_pcm_ holds one buffer per block, because the
+  // transmit encodes run in parallel and cannot share a scratch buffer.
   codecs_.clear();
   codecs_.resize(config_.blocks.size());
   codec_pcm_.assign(
       wire::k_block_channels * format_.period_frames * format_.sample_bytes, 0);
+  tx_block_pcm_.assign(
+      config_.blocks.size(),
+      std::vector<uint8_t>(
+          wire::k_block_channels * format_.period_frames * format_.sample_bytes,
+          0));
+  size_t encoded_blocks = 0;
   for (size_t index = 0; index < config_.blocks.size(); ++index) {
-    if (to_lower(config_.blocks[index].codec) == "opus" &&
-        codec_for_block(index, true, error) == nullptr) {
+    if (to_lower(config_.blocks[index].codec) != "opus") {
+      continue;
+    }
+    ++encoded_blocks;
+    if (codec_for_block(index, true, error) == nullptr) {
       return false;
     }
+  }
+  // The encoders are threaded only when there is more than one, and never across
+  // more threads than blocks. One block runs inline, so the tracer bullet and a
+  // one-block link never pay for a pool they do not use.
+  size_t workers = 0;
+  if (encoded_blocks > 1) {
+    const unsigned hardware = std::thread::hardware_concurrency();
+    workers = hardware > 1 ? hardware - 1 : 0;
+    if (workers > encoded_blocks) {
+      workers = encoded_blocks;
+    }
+  }
+  if (!encoders_.start(workers, error)) {
+    return false;
   }
   return true;
 }
@@ -230,7 +254,11 @@ bool Engine::pack_period(const uint8_t* period, uint64_t sample_position,
                                         ? wire::PayloadType::pcm_l16
                                         : wire::PayloadType::pcm_l24;
 
-  for (const BlockConfig& block : config_.blocks) {
+  packed.blocks.clear();
+  packed.blocks.resize(config_.blocks.size());
+  std::vector<size_t> opus_blocks;
+  for (size_t position = 0; position < config_.blocks.size(); ++position) {
+    const BlockConfig& block = config_.blocks[position];
     if (block.channels.size() != wire::k_block_channels) {
       return fail(error, "engine: block " + std::to_string(block.index) + " maps " +
                              std::to_string(block.channels.size()) +
@@ -238,6 +266,8 @@ bool Engine::pack_period(const uint8_t* period, uint64_t sample_position,
                              "allows no more in one stream");
     }
     // The block's PCM, interleaved as eight channels, whichever codec carries it.
+    // One buffer per block, so the encodes below can run in parallel.
+    std::vector<uint8_t>& block_pcm = tx_block_pcm_[position];
     for (size_t frame_index = 0; frame_index < format_.period_frames;
          ++frame_index) {
       for (size_t slot = 0; slot < block.channels.size(); ++slot) {
@@ -258,34 +288,49 @@ bool Engine::pack_period(const uint8_t* period, uint64_t sample_position,
             format_.sample_bytes;
         const size_t to =
             (frame_index * block.channels.size() + slot) * format_.sample_bytes;
-        std::memcpy(&codec_pcm_[to], period + from, format_.sample_bytes);
+        std::memcpy(&block_pcm[to], period + from, format_.sample_bytes);
       }
     }
 
-    wire::Block wire_block;
+    wire::Block& wire_block = packed.blocks[position];
     wire_block.index = static_cast<uint8_t>(block.index);
     wire_block.channels = wire::k_block_channels;
-
     if (to_lower(block.codec) == "opus") {
-      // The codec seam: the block's PCM goes to Opus, and the payload type says
-      // so, so a receiver that cannot decode it says that rather than guessing.
-      codec::OpusBlock* opus = codec_for_block(block.index, true, error);
-      if (opus == nullptr) {
-        return false;
-      }
-      if (!opus->encode(codec_pcm_.data(), format_.period_frames, &wire_block.data,
-                        error)) {
-        return false;
-      }
+      // Encoded below, on the pool: the payload type says Opus, and a receiver
+      // that cannot decode it says so rather than guessing.
       wire_block.payload = wire::PayloadType::opus;
+      opus_blocks.push_back(position);
     } else {
       wire_block.payload = payload;
       const size_t bytes = wire::payload_bytes(payload, wire::k_block_channels,
                                                format_.period_frames);
-      wire_block.data.assign(codec_pcm_.begin(),
-                             codec_pcm_.begin() + static_cast<long>(bytes));
+      wire_block.data.assign(block_pcm.begin(),
+                             block_pcm.begin() + static_cast<long>(bytes));
     }
-    packed.blocks.push_back(std::move(wire_block));
+  }
+
+  if (!opus_blocks.empty()) {
+    // Resolve the codecs before dispatching, so no worker touches the lazy codec
+    // map, and give each job its own error slot so failures do not race.
+    std::vector<codec::OpusBlock*> encoders(opus_blocks.size(), nullptr);
+    for (size_t job = 0; job < opus_blocks.size(); ++job) {
+      encoders[job] =
+          codec_for_block(config_.blocks[opus_blocks[job]].index, true, error);
+      if (encoders[job] == nullptr) {
+        return false;
+      }
+    }
+    std::vector<std::string> encode_errors(opus_blocks.size());
+    encoders_.run(opus_blocks.size(), [&](size_t job) {
+      const size_t at = opus_blocks[job];
+      encoders[job]->encode(tx_block_pcm_[at].data(), format_.period_frames,
+                            &packed.blocks[at].data, &encode_errors[job]);
+    });
+    for (const std::string& reason : encode_errors) {
+      if (!reason.empty()) {
+        return fail(error, reason);
+      }
+    }
   }
 
   *frame = std::move(packed);
@@ -1014,6 +1059,9 @@ bool Engine::running() const {
 }
 
 void Engine::close() {
+  // Stop the encoder pool before the codecs go away: a worker must not be inside
+  // encode() while its OpusBlock is destroyed.
+  encoders_.stop();
   test_signal_.close();
   delay_line_.close();
   resampler_.close();
