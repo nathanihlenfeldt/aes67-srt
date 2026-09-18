@@ -484,6 +484,8 @@ void Engine::reset_playout() {
   playing_ = false;
   priming_periods_ = 0;
   prime_reported_ = false;
+  startup_periods_ = 0;
+  startup_trim_periods_ = periods_for_ms(5000, format_);
   published_delay_ms_.store(0.0);
   published_delay_fraction_.store(0.0);
   published_clock_offset_ppm_.store(0.0);
@@ -668,6 +670,29 @@ bool Engine::play_one_period(std::string* error) {
                       std::to_string(delay_ms()) + " ms): " + reason);
     }
     std::memset(rx_period_.data(), 0, rx_period_.size());
+  }
+
+  // A link that comes up *after* playout has started floods the buffer with the
+  // sender's backlog, and the ratio control steers rate rather than level, so it
+  // would hold wherever the flood left the level — a second of latency, and the
+  // clamp cannot pull it back (issue #34). For the first few seconds, discard the
+  // stale excess forward to the target: it is audio late enough that playing it
+  // only adds delay, and moving the head forward is the correction ADR 0003 allows.
+  const double target_ms =
+      static_cast<double>(target_periods_) * period_ms(format_);
+  if (playing_ && startup_periods_ < startup_trim_periods_ &&
+      playout_->level_ms() > 2.0 * target_ms) {
+    const uint64_t dropped = playout_->discard_to_level_ms(target_ms);
+    if (dropped > 0 && !startup_trim_reported_) {
+      startup_trim_reported_ = true;
+      log().write(LogLevel::warn, "playout: discarded " + std::to_string(dropped) +
+                                      " frames of a startup backlog, holding " +
+                                      std::to_string(playout_->level_ms()) +
+                                      " ms (the link came up after play began)");
+    }
+  }
+  if (playing_) {
+    ++startup_periods_;
   }
 
   // The control's time base is the device's: one period per turn, because that is

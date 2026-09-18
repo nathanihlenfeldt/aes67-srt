@@ -413,6 +413,11 @@ class Engine {
   /** Set by the supervisor when the link is re-established; the receive thread
    *  rebuilds the clock for the new stream and clears it. */
   std::atomic<bool> playout_reset_requested_{false};
+  /** Periods since play began, and the window in which a startup backlog is
+   *  discarded forward to the target (issue #34). */
+  uint64_t startup_periods_ = 0;
+  uint64_t startup_trim_periods_ = 0;
+  bool startup_trim_reported_ = false;
   /** Receive-loop turns so far. The loop rate is the health signal the byte and
    *  packet counters miss: a receiver that turns at 79/s looks fine per packet
    *  while it silently fails to drain. Logged once a second. */

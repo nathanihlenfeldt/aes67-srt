@@ -207,6 +207,29 @@ bool PlayoutBuffer::take(uint8_t* period, uint64_t* sample_position) {
   return true;
 }
 
+uint64_t PlayoutBuffer::discard_to_level_ms(double keep_ms) {
+  if (keep_ms < 0.0) {
+    keep_ms = 0.0;
+  }
+  uint64_t keep = static_cast<uint64_t>(
+      keep_ms * static_cast<double>(format_.sample_rate) / 1000.0);
+  keep -= keep % period_frames_;
+  const uint64_t held = held_frames();
+  if (held <= keep) {
+    return 0;
+  }
+  const uint64_t drop = held - keep;
+  head_ += drop;
+  if (contiguous_end_ < head_) {
+    contiguous_end_ = head_;
+  }
+  // Counted as dropped: it is audio the sender delivered and we chose not to
+  // play, because playing it would only add latency.
+  dropped_ += drop;
+  advance_contiguous();
+  return drop;
+}
+
 uint64_t PlayoutBuffer::next_held_at_or_after(uint64_t position) const {
   const uint64_t end = head_ + capacity_frames();
   for (uint64_t candidate = position; candidate < end;

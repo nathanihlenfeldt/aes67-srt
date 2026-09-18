@@ -444,6 +444,35 @@ TEST_CASE(clock_a_hole_with_audio_beyond_it_is_crossed_as_silence) {
   CHECK_EQ(buffer.frames_late(), 0u);
 }
 
+TEST_CASE(clock_discards_a_startup_backlog_forward_to_the_target) {
+  // Issue #34: a link that comes up after playout started floods the buffer, and
+  // the ratio control steers rate, not level, so the excess is discarded forward
+  // to the target rather than held for ever.
+  const AudioFormat format = sim_format();
+  PlayoutBuffer buffer(500, format);
+  std::vector<uint8_t> period = make_period(format, 0);
+  uint64_t position = 0;
+
+  // A hundred contiguous periods (100 ms at this format).
+  for (int i = 0; i < 100; ++i) {
+    CHECK(buffer.push(static_cast<uint64_t>(i) * 48, period.data(),
+                      period.size()) == PushStatus::stored);
+  }
+  CHECK_EQ(buffer.held_frames(), 100u * 48u);
+
+  // Keep 20 ms: 80 periods are discarded, the head moves forward, and what
+  // remains plays in order.
+  const uint64_t dropped = buffer.discard_to_level_ms(20.0);
+  CHECK_EQ(dropped, 80u * 48u);
+  CHECK_NEAR(buffer.level_ms(), 20.0, 1e-9);
+  CHECK_EQ(buffer.frames_dropped(), 80u * 48u);
+  CHECK(buffer.take(period.data(), &position));
+  CHECK_EQ(position, 80u * 48u);
+
+  // Keeping more than is held discards nothing.
+  CHECK_EQ(buffer.discard_to_level_ms(1000.0), 0u);
+}
+
 TEST_CASE(clock_an_arrival_it_cannot_place_is_refused_and_counted) {
   const AudioFormat format = sim_format();
   PlayoutBuffer buffer(4, format);  // four periods, so capacity is easy to reach

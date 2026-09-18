@@ -200,6 +200,20 @@ class PlayoutBuffer {
    */
   uint64_t next_held_at_or_after(uint64_t position) const;
 
+ public:
+  /**
+   * Discard the oldest contiguous audio so at most |keep_ms| remains, and return
+   * the frames dropped.
+   *
+   * For a *startup* backlog: when a link comes up after the playout already
+   * started, the sender's accumulated audio arrives at once and the level jumps
+   * far above the target. The ratio control steers rate, not level, so it holds
+   * whatever the level is — it cannot bring a high level down. The stale audio is
+   * late anyway, so the head moves forward to the target, exactly as the overrun
+   * path does at capacity (issue #34).
+   */
+  uint64_t discard_to_level_ms(double keep_ms);
+
   /** Frames held anywhere in the window below |position|: what moving the head
    *  to |position| would strand. */
   uint64_t frames_held_below(uint64_t position) const;
