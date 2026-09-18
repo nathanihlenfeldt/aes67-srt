@@ -38,6 +38,14 @@ A signed, notarized build removes this step; that is issue #30, not done.
 **Then, in the DAW**, record from BlackHole 64ch. Stream channel 1 is input 1, and the live site audio
 is on inputs 1–8.
 
+## Security
+
+The endpoint is a LAN device, like the appliance. Its API binds to `127.0.0.1` in the shipped config
+and is not meant to be reachable from outside the studio. **The link to the site carries the shared
+passphrase** — set it with `--passphrase` at install time, and use the same secret at both ends. It is
+the one part of the product that crosses the public internet; see the spec's *Security, and what it
+assumes*.
+
 ## What you need
 
 - **Wired Ethernet on the Mac.** Not Wi-Fi: 64 channels is ~74 Mbit/s per direction and Wi-Fi drops

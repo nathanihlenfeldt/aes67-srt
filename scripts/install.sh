@@ -224,6 +224,12 @@ The appliance runs at http://<this-host>:8082/ . The preflight page there leads 
 PTP: an unlocked slave is the commonest way it looks healthy while producing silence.
 Send the output of scripts/collect-diagnostics.sh if anything is wrong.
 
+Security, and what it assumes: this appliance belongs behind a router or firewall
+and never takes a public WAN IP. The API above is LAN-only — no auth, no TLS — and
+exposing it to the internet is not supported; reach it over a VPN or tunnel if you
+need remote management. The SRT link to the far end carries a passphrase
+(link.passphrase in ${CONFIG_FILE}): set it, and use the same one at both ends.
+
 Licence: GPL-3.0 (ADR 0002). Distribution carries the source-availability obligation,
 which is why this script installs from the repository rather than a bundled binary.
 EOF
