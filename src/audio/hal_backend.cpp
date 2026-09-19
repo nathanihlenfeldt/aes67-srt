@@ -100,10 +100,18 @@ bool HalBackend::open(const AudioFormat& format, std::string* error) {
   // most read()/write() are ever asked for.
   impl_->byte_scratch.assign(format.frames_to_bytes(format.period_frames), 0);
 
+  // One period, not four. The backend's contract is to pace its caller to one
+  // period per call; waiting longer is what turned "nothing is reading the device"
+  // into a collapsed receive path -- the loop ran a period per wait while data
+  // arrived every period, so the playout buffer filled and the delay pinned at its
+  // maximum. At one period, a device that is draining is followed exactly (the wait
+  // returns as soon as there is room), and a device that is absent merely paces the
+  // loop at the nominal rate and lets the ring overwrite -- which is the correct
+  // "nobody is listening" behaviour.
   const double period_ms =
       static_cast<double>(format.period_frames) * 1000.0 / format.sample_rate;
   impl_->patience = std::chrono::microseconds(
-      static_cast<long>(std::max(20.0, period_ms * 4.0) * 1000.0));
+      static_cast<long>(std::max(5.0, period_ms) * 1000.0));
 
   const size_t bytes = shared_bytes_for(kHalCapacityFrames, format.channels);
   bool created = false;
