@@ -38,6 +38,12 @@ driver install is the one step that asks for an administrator password.
 | `duplex-endpoint` | Both directions through the one device without self-hearing; role/config wiring; the return path (issue #31) | `endpoint-bridge` |
 | `mac-app` | `.app` bundle (the menu bar promoted), `.pkg` installer and uninstaller, launchd, signing and notarisation | `hal-driver`, `endpoint-bridge` |
 
+**Built, as of 2026-09-19.** `hal-driver` (#35–#38) and `endpoint-bridge` (#39) are built, tested on
+CI, and proved on the Mac: the plug-in loaded, opened its region inside the sandbox
+(`shared region created, 64 channels bound`), the endpoint drove the device at 64/64 with `0 refused`,
+and the install/uninstall left the machine clean. `duplex-endpoint` (#41) and `mac-app` (#42–#43) are
+not started; #41 is the frontier, and its blocker is a CoreAudio *client* to stand in for a DAW.
+
 **Build order:** `hal-driver` → `endpoint-bridge` → `duplex-endpoint`. `mac-app` packaging starts
 once `hal-driver` installs, in parallel with `endpoint-bridge`; signing (issue #30) attaches to
 `mac-app` last.
