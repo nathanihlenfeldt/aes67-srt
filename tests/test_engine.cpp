@@ -597,10 +597,23 @@ TEST_CASE(engine_the_link_reconnects_under_full_load) {
     }
     return engine->frames_received() >= wanted;
   };
-  const auto drain_rate = [](Engine* engine, int ms) {
-    const uint64_t before = engine->frames_received();
+  // Measure the receiver against the *sender's own* offered rate over the same
+  // window, rather than an absolute frames-per-second floor. The sender is paced
+  // by the same one-period sleep the receiver is, so on a shared runner both are
+  // throttled together: the macOS CI runner offers ~280 frames/s where a laptop
+  // offers ~990, and a 700/s floor failed the *before* measurement — with no
+  // reconnect involved — on every macOS run. The ratio still catches the bug this
+  // test exists for: a receiver draining ~640 of the sender's 1000 (0.64).
+  const auto drain_rates = [](Engine* receiver, Engine* sender, int ms,
+                              double* received, double* offered) {
+    const uint64_t received_before = receiver->frames_received();
+    const uint64_t offered_before = sender->frames_sent();
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-    return 1000.0 * static_cast<double>(engine->frames_received() - before) / ms;
+    *received = 1000.0 *
+                static_cast<double>(receiver->frames_received() - received_before) /
+                ms;
+    *offered =
+        1000.0 * static_cast<double>(sender->frames_sent() - offered_before) / ms;
   };
 
   std::thread site_thread([&] { site.run(); });
@@ -608,7 +621,9 @@ TEST_CASE(engine_the_link_reconnects_under_full_load) {
   std::thread first_thread([&] { first.run(); });
   CHECK(wait_for_frames(&site, 500, 15000));
 
-  const double rate_before = drain_rate(&site, 2000);
+  double rate_before = 0.0;
+  double offered_before = 0.0;
+  drain_rates(&site, &first, 2000, &rate_before, &offered_before);
 
   // Drop the caller and connect a fresh one, exactly as a reboot does.
   first.stop();
@@ -618,20 +633,23 @@ TEST_CASE(engine_the_link_reconnects_under_full_load) {
   const uint64_t before = site.frames_received();
   std::thread second_thread([&] { second.run(); });
   CHECK(wait_for_frames(&site, before + 500, 30000));
-  const double rate_after = drain_rate(&site, 2000);
+  double rate_after = 0.0;
+  double offered_after = 0.0;
+  drain_rates(&site, &second, 2000, &rate_after, &offered_after);
 
-  std::cout << "    loaded reconnect: " << rate_before << " frames/s before, "
-            << rate_after << " after" << std::endl;
+  std::cout << "    loaded reconnect: " << rate_before << " of " << offered_before
+            << " frames/s before, " << rate_after << " of " << offered_after
+            << " after" << std::endl;
 
   second.stop();
   site.stop();
   second_thread.join();
   site_thread.join();
 
-  // The sender offers ~1000 frames a second (one 1 ms period). The receiver must
-  // keep up before *and after* a reconnect; the bench failure was ~640/s after.
-  CHECK(rate_before > 700.0);
-  CHECK(rate_after > 700.0);
+  // The receiver must track what the sender offered, before *and after* a
+  // reconnect; the bench failure was a ratio of 0.64 after one.
+  CHECK(rate_before >= 0.9 * offered_before);
+  CHECK(rate_after >= 0.9 * offered_after);
 }
 
 TEST_CASE(engine_counts_the_silence_it_feeds_a_link_that_cannot_fill_the_clock) {
