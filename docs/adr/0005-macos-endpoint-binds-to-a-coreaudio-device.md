@@ -1,7 +1,13 @@
 # ADR 0005: The macOS endpoint binds to a CoreAudio device, and ships no driver
 
-Status: **accepted** (2026-09-17). Adopted by the owner when this product was started; the reasoning was
-written on 2026-09-16 as a proposal and is unchanged.
+Status: **superseded in part** (2026-09-19). ADR 0007 reverses the decision below — the endpoint now
+ships its own CoreAudio device rather than binding to BlackHole — because a loopback cannot carry both
+directions at once and the installability this ADR deferred is being paid anyway. **Everything else
+here still holds**: the rings, the realtime discipline, the conversion beside the wire format, and the
+resampler on the receive path only. Read this for that reasoning; read ADR 0007 for the device.
+
+Status of the original decision: **accepted** (2026-09-17). Adopted by the owner when this product was
+started; the reasoning was written on 2026-09-16 as a proposal and is unchanged.
 
 > **Adoption, and the sequencing override (2026-09-17, the owner's decision).** Two things were decided
 > together.

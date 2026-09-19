@@ -12,6 +12,7 @@ distributes must be accounted for. Verified against the installed packages on 20
 | **cpp-httplib** | MIT | header-only, fetched at build (v0.56.0) | Attribution. |
 | **alsa-lib** | LGPL-2.1 | linked on Linux — the RAVENNA backend | Dynamic linking, and the ability to relink against a modified library (satisfied by dynamic linking). |
 | **CoreAudio** | Apple SDK | linked on macOS | A system framework; not redistributed. |
+| **libASPL** | MIT | linked into the macOS endpoint's HAL driver (ADR 0007) | Attribution. Static library, distributed inside the plug-in. |
 
 **Not linked — a separate program:**
 

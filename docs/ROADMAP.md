@@ -114,6 +114,14 @@ the appliance change it by itself.
 
 ## Second product — SRT to CoreAudio on macOS
 
+> **This product now has its own spec: [`docs/spec/0002-macos-endpoint.md`](spec/0002-macos-endpoint.md).**
+> **ADR 0007 (2026-09-19) reverses the device decision below** — the endpoint ships its own CoreAudio
+> device rather than binding to BlackHole, because a loopback cannot carry both directions at once,
+> which is what the "two ways to be a device" reasoning stated as a consequence and deferred. The
+> section below is kept as the record of how the product was reasoned out; the spec is the plan.
+> The "order of work" step 5, *"only then, if ever, the virtual device"*, is the step now being taken:
+> tickets #35–#43.
+
 **Why.** Everything in phases 1 and 2 assumes the far end is equipment: the appliance exists so that
 a console or a DAW *somewhere else on the network* can be fed, and nobody listens in the path. But
 the commonest thing an operator wants at the *near* end is to **mix or process the audio live** — in
