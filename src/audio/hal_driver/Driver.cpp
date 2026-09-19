@@ -20,6 +20,7 @@
 #include <aspl/Stream.hpp>
 
 #include <CoreAudio/AudioServerPlugIn.h>
+#include <os/log.h>
 
 #include <cstddef>
 #include <cstring>
@@ -42,6 +43,13 @@ using aes67_srt::audio::SharedAudio;
 using aes67_srt::audio::SharedRegion;
 
 constexpr UInt32 kSampleRate = 48000;
+
+// The control thread may log, and must: whether the shared region opened inside the
+// plug-in's sandbox is the one thing a hand-test cannot otherwise see.
+os_log_t LogHandle() {
+  static os_log_t handle = os_log_create("dev.aes67-srt.driver", "hal");
+  return handle;
+}
 
 AudioStreamBasicDescription FloatFormat() {
   AudioStreamBasicDescription format;
@@ -74,6 +82,9 @@ class DriverHandler : public aspl::ControlRequestHandler,
     std::string error;
     if (!region_.open(kHalRegionName, bytes, &created, &error)) {
       unbound_reason_ = error;
+      os_log_error(LogHandle(),
+                   "shared region unavailable, device stays silent: %{public}s",
+                   error.c_str());
       return kAudioHardwareNoError;
     }
     const bool ready = created
@@ -88,6 +99,8 @@ class DriverHandler : public aspl::ControlRequestHandler,
     bridge_.configure(kHalChannels);
     bridge_.bind(&audio_.to_host(), &audio_.from_host());
     unbound_reason_.clear();
+    os_log_info(LogHandle(), "shared region %{public}s, %u channels bound",
+                created ? "created" : "attached", kHalChannels);
     return kAudioHardwareNoError;
   }
 
