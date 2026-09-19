@@ -36,7 +36,7 @@ what phase-2 Opus is for. See `docs/spec/0001-aes67-srt.md` → *The link it exp
   stream rather than RTP-over-SRT. `0002` is the licence. The rest arrive as decisions land.
 - **`CHANGELOG.md`** — what each version changed. **`docs/releasing.md`** — the version scheme and the
   release checklist. **`docs/third-party-licences.md`** — the dependency licence audit.
-- **`docs/runbooks/`** — the field procedures: `commissioning.md` for a site and a studio,
+- **`docs/runbooks/`** — the field procedures: `operating.md` for starting, stopping and updating it, `commissioning.md` for a site and a studio,
   `macos-endpoint.md` for the studio endpoint, `hardware-session.md` for the measurements.
 - **`CONTEXT.md`** — the glossary, created lazily when terms actually land. Not written
   speculatively.
