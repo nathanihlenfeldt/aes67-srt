@@ -20,11 +20,12 @@ namespace aes67_srt::audio {
  * The inversion ADR 0005 describes is here, in a new place. With the AudioUnit
  * backend *the device calls us*, through a render callback in this process. With a
  * HAL plug-in the device is in **another** process, so the meeting point is the two
- * shared rings, and this backend's `read()`/`write()` are paced by the traffic in
- * them: `read()` waits for the plug-in to have produced a period, `write()` waits
- * for room. A bounded wait ends in the same truthfulness as everywhere else — a
- * starved read is padded with silence, a full write gives up the oldest, and both
- * are counted — so a missing plug-in degrades to silence rather than a stall.
+ * shared rings. This backend paces its caller by **the clock, one period per call**
+ * — on macOS a virtual device's clock is the system clock, so that tracks the
+ * device exactly — and moves audio without ever waiting on the rings: a starved
+ * read is padded with silence, a full write gives up the oldest, and both are
+ * counted. Waiting on the ring instead is the trap that froze a working link
+ * whenever nothing was reading the device.
  *
  * `s24_3le` ↔ float32 conversion is done here, on the engine's side of the ring, in
  * ordinary code (ADR 0005): the ring is float because the HAL is, and the wire is

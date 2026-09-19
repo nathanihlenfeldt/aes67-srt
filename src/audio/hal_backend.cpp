@@ -39,29 +39,41 @@ struct HalBackend::Impl {
   std::vector<float> float_scratch;
   std::vector<uint8_t> byte_scratch;
 
-  // The longest a read or a write will wait for the other side before telling the
-  // truth (silence or a drop). A plug-in that has gone away must not stall the
-  // engine, and a healthy one answers well inside this.
-  std::chrono::microseconds patience{0};
+  // One engine period: the rate read() and write() pace their caller.
+  std::chrono::microseconds period{0};
+  std::chrono::steady_clock::time_point next_read{};
+  std::chrono::steady_clock::time_point next_write{};
 
   /**
-   * Wait until `ready()` or `patience` elapses. The poll interval is short enough
-   * to be indistinguishable from blocking at 48 kHz (a period is 1–20 ms) and long
-   * enough not to spin a core. Returns whether `ready()` became true.
+   * Sleep until the next period boundary.
+   *
+   * **This is what paces the engine's receive loop, and it must not wait on the
+   * device.** The loop takes exactly one period per turn and the write used to be
+   * what made it so -- by waiting for room in the ring. When nothing reads the
+   * device, there is never room, so each turn waited and the loop fell behind the
+   * arriving audio; the playout buffer filled to its maximum and stayed there,
+   * because the only thing that can drain it is a correction of a few hundred ppm.
+   * A device nobody is listening to therefore froze a link that was working.
+   *
+   * Pacing by the clock instead is correct on macOS, not a compromise: a virtual
+   * device's clock *is* the system clock, so one period of wall time is one period
+   * of the device. The ring then simply overwrites when nobody is reading -- the
+   * right answer for a monitor path with no listener -- and the playout buffer
+   * holds its level whether or not a DAW is attached.
+   *
+   * If the caller falls a whole period behind, resync rather than send a burst.
    */
-  template <typename Predicate>
-  bool wait_for(Predicate ready) {
-    const auto deadline = std::chrono::steady_clock::now() + patience;
-    if (ready()) {
-      return true;
+  void pace(std::chrono::steady_clock::time_point& deadline) {
+    const auto now = std::chrono::steady_clock::now();
+    if (deadline.time_since_epoch().count() == 0) {
+      deadline = now;
     }
-    while (std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(std::chrono::microseconds(250));
-      if (ready()) {
-        return true;
-      }
+    if (now < deadline) {
+      std::this_thread::sleep_until(deadline);
+    } else if (now - deadline > period) {
+      deadline = now;
     }
-    return ready();
+    deadline += period;
   }
 };
 
@@ -100,18 +112,11 @@ bool HalBackend::open(const AudioFormat& format, std::string* error) {
   // most read()/write() are ever asked for.
   impl_->byte_scratch.assign(format.frames_to_bytes(format.period_frames), 0);
 
-  // One period, not four. The backend's contract is to pace its caller to one
-  // period per call; waiting longer is what turned "nothing is reading the device"
-  // into a collapsed receive path -- the loop ran a period per wait while data
-  // arrived every period, so the playout buffer filled and the delay pinned at its
-  // maximum. At one period, a device that is draining is followed exactly (the wait
-  // returns as soon as there is room), and a device that is absent merely paces the
-  // loop at the nominal rate and lets the ring overwrite -- which is the correct
-  // "nobody is listening" behaviour.
+  // One period, the rate at which read() and write() pace the engine (see pace()).
   const double period_ms =
       static_cast<double>(format.period_frames) * 1000.0 / format.sample_rate;
-  impl_->patience = std::chrono::microseconds(
-      static_cast<long>(std::max(5.0, period_ms) * 1000.0));
+  impl_->period = std::chrono::microseconds(
+      static_cast<long>(std::max(1.0, period_ms) * 1000.0));
 
   const size_t bytes = shared_bytes_for(kHalCapacityFrames, format.channels);
   bool created = false;
@@ -150,9 +155,8 @@ bool HalBackend::read(uint8_t* destination, unsigned frames, std::string* error)
   }
   const unsigned channels = impl_->format.channels;
   SharedRing& ring = impl_->audio.from_host();
-  // Paced by the plug-in: wait for it to have produced a whole period.
-  impl_->wait_for([&ring, frames] { return ring.available_read() >= frames; });
-
+  // Pace to one period, then take whatever the device produced (or silence).
+  impl_->pace(impl_->next_read);
   const size_t got = ring.read(impl_->float_scratch.data(), frames);
   if (got < frames) {
     // The device gave us less than a period. Pad with silence, as every backend
@@ -178,10 +182,10 @@ bool HalBackend::write(const uint8_t* source, unsigned frames, std::string* erro
   const unsigned channels = impl_->format.channels;
   s24_3le_to_float(source, frames, channels, impl_->float_scratch.data());
   SharedRing& ring = impl_->audio.to_host();
-  // Paced by the plug-in: wait for it to have consumed enough to make room.
-  impl_->wait_for([&ring, frames] { return ring.available_write() >= frames; });
-  // If it is still full the ring keeps the newest and counts the rest, which is the
-  // same never-grow-latency rule the send path uses everywhere else.
+  // Pace to one period, then hand it over. No waiting for room: a device nobody is
+  // reading must not slow the loop, and the ring keeps the newest and counts the
+  // rest (the same never-grow-latency rule the send path uses everywhere else).
+  impl_->pace(impl_->next_write);
   ring.write(impl_->float_scratch.data(), frames);
   return true;
 }
