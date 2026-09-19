@@ -1,58 +1,97 @@
 # aes67-srt
 
-Extends a production site's AES67 fabric to a remote location over the public
-internet: **64 channels — eight 8-channel blocks — of uncompressed L24 PCM at
-48 kHz in each direction**, carried in a single SRT stream per link, with the
-same binary acting as transmitter, receiver or both. Configured from a web UI,
-because it ships to other people's sites.
+**64 channels of AES67 audio, from a production site to a studio Mac, over the public internet — in
+one encrypted SRT stream, with no VPN and no public IP.**
 
-**Status: v1 is built, tested and running in the field.** The appliance moves audio between an AES67
-device and a single SRT stream in each direction, reconciles the two ends' clock domains by continuous
-resampling (ADR 0003), carries up to 64 channels losslessly or with Opus, and can delay its egress
-audio to match vision with an impulse test signal to align against. It is controlled from a web page
-whose REST API and controls — including start/stop/restart of the engine, the process and the daemon —
-are in service. The macOS endpoint presents the stream to CoreAudio through BlackHole, with a menu-bar
-app. **What remains is human and hardware acceptance, not build:** the real-device clock session
-(issue #18), an hours-long internet soak (#29), a signed Mac build (#30), and the studio return path
-(#31). The plan is in the specification, the decisions in `docs/adr/`, and the measured facts in
-`docs/research/`.
+[![build](https://github.com/nathanihlenfeldt/aes67-srt/actions/workflows/build.yml/badge.svg)](https://github.com/nathanihlenfeldt/aes67-srt/actions/workflows/build.yml)
+[![licence: GPL-3.0](https://img.shields.io/badge/licence-GPL--3.0-blue.svg)](LICENSE)
 
-**The link it expects:** wired Ethernet at both ends and a low-jitter internet connection. The default
-is **Opus**, at roughly **1–8 Mbit/s for all 64 channels**; lossless PCM is ~74 Mbit/s per direction.
-Either way, the round trip plus its jitter has to fit inside the transport delay. Wi-Fi, 5G/LTE and
-consumer satellite (Starlink) remain out of scope: their jitter exceeds what the delay window absorbs.
-See `docs/spec/0001-aes67-srt.md` → *The link it expects*.
+```
+   PRODUCTION SITE                                     STUDIO
+ ┌────────────────────────┐                      ┌────────────────────────┐
+ │ console / Q-SYS /      │                      │ DAW: Fairlight,        │
+ │ Dante / AES67 fabric   │                      │ Pro Tools, Reaper      │
+ └───────────┬────────────┘                      └───────────▲────────────┘
+             │ 8 × AES67 streams, 64 channels               │ CoreAudio
+ ┌───────────▼────────────┐   one SRT stream     ┌───────────┴────────────┐
+ │ appliance (Pi 5)       │   over the internet   │ macOS endpoint         │
+ │ AES67 → blocks → SRT   │══════════════════════▶│ SRT → blocks →         │
+ │ web UI :8082           │   encrypted, ~1–8 Mbps│ BlackHole 64ch         │
+ └────────────────────────┘                       └────────────────────────┘
+```
 
-## Where things are
+## What it does
 
-- **`docs/README.md`** — the map of all documentation, by who it is for.
-- **`docs/manual/`** — **the user manual**, for installing and operating it: getting started,
-  configuring, operating, use cases and troubleshooting.
-- **`docs/spec/0001-aes67-srt.md`** — the specification. Start here to work on the code. The frozen
-  decisions, the capability map, the wire format, the clock problem and the boundaries are all in it.
-- **`docs/ROADMAP.md`** — what comes after v1, and what is deliberately not in it.
-- **`docs/research/`** — what was verified against primary sources, with citations. Start with
-  `libsrt.md`: it corrects an assumption the wire format's ADR was built on.
-- **`docs/runbooks/hardware-session.md`** — the one session at the hardware the remaining measurements
-  wait on. Run `scripts/measure-hardware.sh` on the appliance and send the report back.
-- **`docs/agents/`** — how the engineering skills read this repository.
-- **`docs/adr/`** — decisions of record. `0001` is the wire format: our own frame in the SRT
-  stream rather than RTP-over-SRT. `0002` is the licence. The rest arrive as decisions land.
-- **`CHANGELOG.md`** — what each version changed. **`docs/releasing.md`** — the version scheme and the
-  release checklist. **`docs/third-party-licences.md`** — the dependency licence audit.
-- **`docs/runbooks/`** — the field procedures: `commissioning.md` for a site and a studio,
-  `macos-endpoint.md` for the studio endpoint, `hardware-session.md` for the measurements.
-- **`CONTEXT.md`** — the glossary, created lazily when terms actually land. Not written
-  speculatively.
+- **64 channels** — eight 8-channel blocks, 48 kHz, the AES67 stream size. One SRT stream per link,
+  in either direction; the same binary is transmitter, receiver or both.
+- **Opus by default**, at roughly **1–8 Mbit/s for all 64 channels**, so an ordinary site uplink
+  carries it. Lossless PCM L24 is the other mode, at ~74 Mbit/s per direction. Mixed links are
+  allowed: PCM on the blocks that matter, Opus on the rest.
+- **Reconciles the two ends' clock domains** by continuous resampling (ADR 0003), so the audio does
+  not drift when the site's PTP clock and the Mac's device clock disagree.
+- **Never silently degrades.** If the link sags, delay grows, the page shows it and alarms; quality
+  changes only when a human changes it.
+- **Aligns audio to vision** with an A/V delay line and an impulse test signal to measure against.
+- **Configured from a web page**, because it ships to other people's sites — with a menu-bar app on
+  the studio Mac.
+
+## Quick start
+
+**The site** (a Pi 5 on the AES67 network, wired Ethernet) — one command, idempotent, safe to re-run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nathanihlenfeldt/aes67-srt/main/scripts/install.sh \
+  | sudo bash
+```
+
+It installs the RAVENNA kernel module and `aes67-daemon`, builds the appliance, sets it up as a
+service, and prints a preflight report. **PTP locked** and **device present** are the two lines that
+matter. The page is then at `http://<its address>:8082/`.
+
+**The studio** (a Mac, wired Ethernet, [BlackHole 64ch](https://existential.audio/blackhole/)
+installed) — build, then install the endpoint and its menu-bar app at login:
+
+```sh
+cmake -S . -B build && cmake --build build --target aes67-srt-mac
+./scripts/install-mac.sh --peer <appliance-ip>:9000 --passphrase <shared-secret> --role rx
+```
+
+Then record **BlackHole 64ch** in your DAW. **Stream channel 1 is DAW input 1.**
+
+Full instructions, settings and use cases are in the [user manual](docs/manual/index.md).
+
+## Status
+
+**Built, tested, and running in the field.** The wire format, SRT transport, the AES67 and CoreAudio
+backends, the daemon client, the engine, the clock, the A/V delay, the REST API and web UI, the
+control surface and the macOS endpoint all exist and are tested on Linux CI and macOS. **What
+remains is acceptance, not construction:** a real-device clock session (#18), an hours-long internet
+soak (#29), a signed Mac build (#30), and the studio return path (#31).
+
+**The link it expects:** wired Ethernet at both ends and a low-jitter connection — the round trip
+plus its jitter has to fit inside the transport delay. Wi-Fi, 5G/LTE and consumer satellite are out
+of scope. See the spec → *The link it expects*.
+
+## Documentation
+
+[`docs/README.md`](docs/README.md) is the map, by audience. The short version:
+
+- **[User manual](docs/manual/index.md)** — installing and running it: getting started, configuring,
+  use cases, troubleshooting.
+- **[Specification](docs/spec/0001-aes67-srt.md)** — the frozen decisions, the wire format, the
+  clock problem, the boundaries. Start here to work on the code.
+- **[ADRs](docs/adr/)** — decisions of record, starting with the wire format (`0001`) and the
+  licence (`0002`).
+- **[Research](docs/research/)** — what was verified against primary sources, with citations.
+- **[Runbooks](docs/runbooks/)** — the field procedures, including the [one hardware session the
+  remaining measurements wait on](docs/runbooks/hardware-session.md).
+- **[Roadmap](docs/ROADMAP.md)** — what comes after v1, and what is deliberately not in it.
+- **[API](docs/api.md)** · **[Changelog](CHANGELOG.md)** · **[Releasing](docs/releasing.md)** ·
+  **[Third-party licences](docs/third-party-licences.md)**.
 
 The work is tracked as issues on
-[`nathanihlenfeldt/aes67-srt`](https://github.com/nathanihlenfeldt/aes67-srt/issues):
-the numbered chain is the build order, issues #2–#5 are the research, and #1 is the specification.
-
-**Next, in one line:** the build is done, so the next work is acceptance — run
-`scripts/measure-hardware.sh` on the Pi for the real-device clock figures (issue #18), then the
-hours-long internet soak (#29); the signed Mac build (#30) and the studio return path (#31) follow.
-See [`docs/README.md`](docs/README.md) for where everything lives.
+[`nathanihlenfeldt/aes67-srt`](https://github.com/nathanihlenfeldt/aes67-srt/issues): the numbered
+chain is the build order, issues #2–#5 are the research, and #1 is the specification.
 
 ## Building
 
@@ -86,8 +125,8 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Everything CI runs, in one command — including the formatting gate and the
-refusal behaviour described below:
+Everything CI runs, in one command — including the formatting gate and the refusal behaviour
+described below:
 
 ```sh
 ./scripts/check.sh
@@ -101,14 +140,13 @@ build/aes67-srt -c config/aes67-srt.dev.conf              # run (no audio yet)
 build/aes67-srt -v                                        # version and build flags
 ```
 
-`config/aes67-srt.conf` is the shipped sample; `config/aes67-srt.dev.conf` is the
-development one, with a null audio backend and a fake daemon so nothing touches
-hardware.
+`config/aes67-srt.conf` is the shipped sample; `config/aes67-srt.dev.conf` is the development one,
+with a null audio backend and a fake daemon so nothing touches hardware.
 
 ## Refusing rather than repairing
 
-Configuration is validated **before** anything is written or applied, and a
-refusal names the offending field:
+Configuration is validated **before** anything is written or applied, and a refusal names the
+offending field:
 
 ```
 $ build/aes67-srt -c bad.conf --validate
@@ -117,9 +155,9 @@ $ echo $?
 3
 ```
 
-An unknown key is an error rather than something to ignore, because the commonest
-way an appliance ends up running on defaults while looking configured is a typo
-in a key name. `./scripts/check.sh` asserts this behaviour, so it cannot regress.
+An unknown key is an error rather than something to ignore, because the commonest way an appliance
+ends up running on defaults while looking configured is a typo in a key name. `./scripts/check.sh`
+asserts this behaviour, so it cannot regress.
 
 ## Licence
 
