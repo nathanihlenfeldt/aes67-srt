@@ -1,6 +1,7 @@
 #include "http/api_server.hpp"
 
 #include <sys/stat.h>
+#include <csignal>
 
 #include <cstdio>
 #include <cstdlib>
@@ -186,6 +187,7 @@ const char* k_fallback_page = R"HTML(<!doctype html>
       <button id="startengine" type="button">Start</button>
       <button id="stopengine" type="button">Stop</button>
       <button id="restartengine" type="button">Restart</button>
+      <button id="restartprocess" type="button">Restart process</button>
       <span class="msg" id="enginemsg" role="status"></span>
     </div>
     <p class="msg">Stop and Start the audio without stopping this page. Restart applies a
@@ -327,6 +329,11 @@ async function engineAction(path, oktext) {
 $('startengine').onclick = () => engineAction('/api/engine/start', 'started');
 $('stopengine').onclick = () => engineAction('/api/engine/stop', 'stopped');
 $('restartengine').onclick = () => engineAction('/api/engine/restart', 'restarting');
+$('restartprocess').onclick = async () => {
+  const m = $('enginemsg'); m.className = 'msg'; m.textContent = 'restarting the process…';
+  await fetch('/api/process/restart', { method: 'POST' }).catch(() => {});
+  m.className = 'msg'; m.textContent = 'restarting; the page will reconnect';
+};
 // The mode control sets every block at once — the operator thinks "lossless or
 // compressed", not "block 3's payload type". The per-block selects stay for the
 // advanced case, and are what is saved.
@@ -1007,6 +1014,24 @@ void ApiServer::register_routes() {
             [lifecycle](const httplib::Request&, httplib::Response& response) {
               lifecycle(response, "restart");
             });
+
+  // Restart the *process* — needed to pick up a new binary, and distinct from an
+  // engine restart, which keeps the process (and this page) up. The binary cannot
+  // restart itself and keep serving, so it asks to stop: both supervisors relaunch
+  // on exit (`launchd` KeepAlive, `systemd` Restart=always) and the page
+  // reconnects.
+  svr->Post("/api/process/restart", [](const httplib::Request&,
+                                       httplib::Response& response) {
+    reply_json(response, {{"ok", true},
+                          {"detail", "stopping; the supervisor will restart it"}});
+    // After the response is written: a raised signal stops this process, so it
+    // must not happen before the reply leaves. A short delay on a detached thread
+    // does that without blocking the server.
+    std::thread([] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      std::raise(SIGTERM);
+    }).detach();
+  });
 
   // ---- the UI ------------------------------------------------------------
   // The built front end wins when it is there; otherwise the built-in page still
