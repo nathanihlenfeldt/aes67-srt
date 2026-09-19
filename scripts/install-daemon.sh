@@ -160,6 +160,29 @@ if command -v pipewire >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# 4b. Let the control surface manage the daemon, and only the daemon
+# ---------------------------------------------------------------------------
+# The status page can start/stop/restart the daemon (issue #33), which is a
+# systemd action the appliance user cannot perform by default. This grants exactly
+# that one unit and nothing else — not sudo, not a wildcard — so a site gets the
+# control without a terminal, and without handing the appliance the machine.
+POLKIT_RULE=/etc/polkit-1/rules.d/49-aes67-srt-daemon.rules
+log "allowing the aes67-srt user to manage aes67-daemon.service"
+run mkdir -p /etc/polkit-1/rules.d
+tee "${POLKIT_RULE}" >/dev/null <<'EOF'
+// Installed by aes67-srt. Scoped to one unit so the control surface can
+// start, stop and restart aes67-daemon without full sudo.
+polkit.addRule(function(action, subject) {
+  if (action.id == "org.freedesktop.systemd1.manage-units" &&
+      action.lookup("unit") == "aes67-daemon.service" &&
+      subject.user == "aes67-srt") {
+    return polkit.Result.YES;
+  }
+});
+EOF
+run chmod 0644 "${POLKIT_RULE}"
+
+# ---------------------------------------------------------------------------
 # 5. The Merging RAVENNA/AES67 kernel module, through DKMS
 # ---------------------------------------------------------------------------
 RAVENNA_LKM_REPO="https://github.com/bondagit/ravenna-alsa-lkm"

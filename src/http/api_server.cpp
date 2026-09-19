@@ -1,6 +1,7 @@
 #include "http/api_server.hpp"
 
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <csignal>
 
 #include <cstdio>
@@ -241,6 +242,9 @@ const char* k_fallback_page = R"HTML(<!doctype html>
       <button id="subscribe" type="button">Subscribe sink</button>
       <button id="unsubscribe" type="button">Unsubscribe</button>
       <button id="publish" type="button">Publish sources</button>
+      <button id="daemonstart" type="button">Start daemon</button>
+      <button id="daemonstop" type="button">Stop daemon</button>
+      <button id="daemonrestart" type="button">Restart daemon</button>
       <span class="msg" id="aes67msg" role="status"></span>
     </div>
   </section>
@@ -477,6 +481,16 @@ $('subscribe').onclick = () => aes67Action('/api/aes67/subscribe',
   { block: parseInt($('a_block').value, 10), source: $('a_source').value }, 'sink subscribed');
 $('unsubscribe').onclick = () => aes67Action('/api/aes67/unsubscribe',
   { block: parseInt($('a_block').value, 10) }, 'sink removed');
+async function daemonAction(verb) {
+  const m = $('aes67msg'); m.className = 'msg'; m.textContent = 'working…';
+  const r = await fetch('/api/daemon/' + verb, { method: 'POST' });
+  m.className = r.ok ? 'msg ok' : 'msg bad';
+  m.textContent = r.ok ? ('daemon ' + verb + ' ok') : await r.text();
+  loadAes67();
+}
+$('daemonstart').onclick = () => daemonAction('start');
+$('daemonstop').onclick = () => daemonAction('stop');
+$('daemonrestart').onclick = () => daemonAction('restart');
 $('publish').onclick = async () => {
   const m = $('aes67msg');
   const r = await fetch('/api/aes67/publish', { method: 'POST' });
@@ -1031,6 +1045,58 @@ void ApiServer::register_routes() {
       std::this_thread::sleep_for(std::chrono::milliseconds(300));
       std::raise(SIGTERM);
     }).detach();
+  });
+
+  // ---- the AES67 daemon's lifecycle (issue #33) --------------------------
+  // A separate systemd service, so this needs a privilege the appliance user does
+  // not have by default. install-daemon.sh installs a polkit rule scoped to
+  // aes67-daemon.service; without it systemctl refuses and we report exactly that
+  // rather than pretending. The command is fixed — the verb is one of three and
+  // the unit is ours — so nothing here reaches a shell from the request.
+  const auto daemon_lifecycle = [this](httplib::Response& response,
+                                       const char* action) {
+    if (daemon_ == nullptr) {
+      reply_text(response, 404, "this build has no AES67 daemon to control");
+      return;
+    }
+    const std::string verb(action);
+    if (verb != "start" && verb != "stop" && verb != "restart") {
+      reply_text(response, 400, "unknown daemon action");
+      return;
+    }
+    const std::string command = "systemctl " + verb + " aes67-daemon 2>&1";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (pipe == nullptr) {
+      reply_text(response, 500, "cannot run systemctl");
+      return;
+    }
+    std::string output;
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+      output += buffer;
+    }
+    const int status = pclose(pipe);
+    const int code = status == -1 ? -1 : WEXITSTATUS(status);
+    if (code != 0) {
+      reply_text(response, 403,
+                 output.empty() ? "systemctl refused (is the polkit rule "
+                                  "installed?)"
+                                : output);
+      return;
+    }
+    reply_json(response, {{"ok", true}, {"action", verb}, {"output", output}});
+  };
+  svr->Post("/api/daemon/start", [daemon_lifecycle](const httplib::Request&,
+                                                    httplib::Response& response) {
+    daemon_lifecycle(response, "start");
+  });
+  svr->Post("/api/daemon/stop", [daemon_lifecycle](const httplib::Request&,
+                                                   httplib::Response& response) {
+    daemon_lifecycle(response, "stop");
+  });
+  svr->Post("/api/daemon/restart", [daemon_lifecycle](const httplib::Request&,
+                                                      httplib::Response& response) {
+    daemon_lifecycle(response, "restart");
   });
 
   // ---- the UI ------------------------------------------------------------
