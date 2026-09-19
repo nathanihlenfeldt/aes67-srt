@@ -35,11 +35,13 @@ set(WITH_ALSA "AUTO" CACHE STRING "Build the RAVENNA/ALSA backend: ON, OFF or AU
 set(WITH_SAMPLERATE "AUTO" CACHE STRING "Build the clock's resampler: ON, OFF or AUTO")
 set(WITH_COREAUDIO "AUTO" CACHE STRING "Build the macOS CoreAudio backend: ON, OFF or AUTO")
 set(WITH_OPUS "AUTO" CACHE STRING "Build Opus encoding (roadmap phase 2): ON, OFF or AUTO")
+set(WITH_HALDRIVER "AUTO" CACHE STRING "Build the macOS HAL plug-in (ADR 0007): ON, OFF or AUTO")
 set_property(CACHE WITH_SRT PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_ALSA PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_SAMPLERATE PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_COREAUDIO PROPERTY STRINGS ON OFF AUTO)
 set_property(CACHE WITH_OPUS PROPERTY STRINGS ON OFF AUTO)
+set_property(CACHE WITH_HALDRIVER PROPERTY STRINGS ON OFF AUTO)
 
 option(WITH_TESTS "Build unit tests" ON)
 option(WITH_WEBUI "Build the web UI (requires npm)" OFF)
@@ -212,13 +214,10 @@ set(AES67_SRT_SOURCES
   src/aes67/fake_daemon_client.cpp
   src/app.cpp
   src/audio/backend.cpp
-  src/audio/device_bridge.cpp
   src/audio/float_ring.cpp
   src/audio/levels.cpp
   src/audio/null_backend.cpp
   src/audio/pcm.cpp
-  src/audio/shared_region.cpp
-  src/audio/shared_ring.cpp
   src/clock/playout_buffer.cpp
   src/clock/ratio_control.cpp
   src/clock/resampler.cpp
@@ -252,6 +251,18 @@ if(COREAUDIO_AVAILABLE)
   list(APPEND AES67_SRT_SOURCES src/audio/coreaudio_backend.cpp)
 endif()
 
+# The shared-memory audio block: the one thing both halves of the macOS endpoint
+# compile against (ADR 0007, spec 0002). It is its own library so the plug-in links
+# *only* this -- the contract, the ring and the bridge -- and not the engine, the
+# transport or the daemon, none of which exist in the plug-in's process. The
+# application links it too, through the core below, so the two cannot drift.
+add_library(aes67-srt-shared STATIC
+  src/audio/device_bridge.cpp
+  src/audio/shared_region.cpp
+  src/audio/shared_ring.cpp)
+target_include_directories(aes67-srt-shared PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_options(aes67-srt-shared PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
 add_library(aes67-srt-core STATIC ${AES67_SRT_SOURCES})
 target_include_directories(aes67-srt-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if(ALSA_AVAILABLE)
@@ -266,7 +277,8 @@ target_compile_definitions(aes67-srt-core PUBLIC
   AES67_SRT_WITH_OPUS=$<BOOL:${OPUS_AVAILABLE}>
   AES67_SRT_WITH_SAMPLERATE=$<BOOL:${SAMPLERATE_AVAILABLE}>)
 target_link_libraries(aes67-srt-core
-  PUBLIC nlohmann_json::nlohmann_json httplib::httplib Threads::Threads)
+  PUBLIC nlohmann_json::nlohmann_json httplib::httplib Threads::Threads
+         aes67-srt-shared)
 
 # libsrt is linked only when it was found.  The transport compiles either way and
 # reports why it cannot open a link, so a development machine without it still
@@ -334,6 +346,77 @@ if(APPLE)
   add_executable(aes67-srt-mac src/mac/main.cpp)
   target_compile_options(aes67-srt-mac PRIVATE -Wall -Wextra -Wno-unused-parameter)
   target_link_libraries(aes67-srt-mac PRIVATE aes67-srt-core)
+endif()
+
+# ---------------------------------------------------------------------------
+# The endpoint's own CoreAudio device (ADR 0007, spec 0002, issue #37)
+#
+# A user-space HAL plug-in: a `.driver` bundle loaded by coreaudiod. macOS only,
+# and built only when asked for, because it needs libASPL fetched and it is not
+# part of the appliance.
+#
+# libASPL is fetched by **git, and not shallow**, unlike every other dependency
+# here. Its own CMake derives the version from `git describe` and fails outright on
+# an archive or a `--depth 1` clone with no reachable tag, so the release-archive
+# pattern this file uses elsewhere cannot work for it. That is the same trap the
+# spike (issue #35) hit.
+# ---------------------------------------------------------------------------
+set(HALDRIVER_ENABLED FALSE)
+if(APPLE AND NOT WITH_HALDRIVER STREQUAL "OFF")
+  if(NOT FETCH_DEPS)
+    message(STATUS "hldriver: WITH_HALDRIVER needs FetchContent (libASPL); skipped")
+  else()
+    set(HALDRIVER_ENABLED TRUE)
+  endif()
+elseif(WITH_HALDRIVER STREQUAL "ON" AND NOT APPLE)
+  message(FATAL_ERROR "WITH_HALDRIVER=ON but this is not an Apple platform")
+endif()
+
+if(HALDRIVER_ENABLED)
+  include(ExternalProject)
+  set(LIBASPL_PREFIX "${CMAKE_BINARY_DIR}/libASPL-prefix")
+  ExternalProject_Add(libASPL_external
+    GIT_REPOSITORY https://github.com/gavv/libASPL.git
+    GIT_TAG v3.1.2
+    GIT_SHALLOW FALSE
+    INSTALL_DIR "${LIBASPL_PREFIX}"
+    CMAKE_ARGS
+      -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
+      -DCMAKE_BUILD_TYPE=Release
+      -DBUILD_TESTING=OFF
+    LOG_CONFIGURE YES
+    LOG_BUILD YES
+    LOG_INSTALL YES)
+
+  # A MODULE library packed as a bundle: `AES67SRT.driver`, the form coreaudiod
+  # loads. The name is the plug-in's, not the device's -- the device an operator
+  # sees is `AES67-SRT`, set in Driver.cpp.
+  add_library(AES67SRT MODULE src/audio/hal_driver/Driver.cpp)
+  add_dependencies(AES67SRT libASPL_external)
+  target_include_directories(AES67SRT PRIVATE
+    "${LIBASPL_PREFIX}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(AES67SRT PRIVATE
+    aes67-srt-shared
+    "${LIBASPL_PREFIX}/lib/libASPL.a"
+    "-framework CoreFoundation")
+  target_compile_options(AES67SRT PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+  set_target_properties(AES67SRT PROPERTIES
+    OUTPUT_NAME "AES67SRT"
+    BUNDLE true
+    BUNDLE_EXTENSION "driver"
+    PREFIX ""
+    SUFFIX ""
+    MACOSX_BUNDLE ON
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/audio/hal_driver/Info.plist.in"
+    MACOSX_BUNDLE_BUNDLE_NAME "AES67SRT"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_COPYRIGHT "GPL-3.0 (see LICENSE)"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "dev.aes67-srt.driver"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    )
+  message(STATUS "hldriver: AES67SRT.driver will be built (libASPL fetched)")
 endif()
 
 # ---------------------------------------------------------------------------
