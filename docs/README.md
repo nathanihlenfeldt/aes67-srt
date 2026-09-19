@@ -22,7 +22,7 @@ Where each kind of document lives, and who it is for. If you are not sure where 
 | [`spec/0002-macos-endpoint.md`](spec/0002-macos-endpoint.md) | **the macOS endpoint's specification.** Its own device, duplex, the app and its install. |
 | [`ROADMAP.md`](ROADMAP.md) | what follows v1, and what is deliberately not in it |
 | [`adr/`](adr/) | decisions of record. `0001` the wire format; `0002` the licence; `0003` clock reconciliation; `0004` the shared core; `0005` the macOS endpoint (superseded in part); `0006` the A/V delay; `0007` the endpoint ships its own device. |
-| [`research/`](research/) | what was verified against primary sources, with citations — `libsrt`, `clock-recovery`, `av-delay`, `opus`, `aes67-daemon-64ch`, `macos-endpoint` |
+| [`research/`](research/) | what was verified against primary sources, with citations — `libsrt`, `clock-recovery`, `av-delay`, `opus`, `aes67-daemon-64ch`, `macos-endpoint`, `endpoint-clock` |
 | [`api.md`](api.md) | the REST API and every route |
 
 ## If you are in the field
