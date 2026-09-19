@@ -216,6 +216,7 @@ set(AES67_SRT_SOURCES
   src/audio/levels.cpp
   src/audio/null_backend.cpp
   src/audio/pcm.cpp
+  src/audio/shared_ring.cpp
   src/clock/playout_buffer.cpp
   src/clock/ratio_control.cpp
   src/clock/resampler.cpp

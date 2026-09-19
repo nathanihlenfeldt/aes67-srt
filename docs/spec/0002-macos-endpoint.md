@@ -136,13 +136,15 @@ and fails on a shallow clone with no reachable tag (the spike hit exactly this).
 ## Project structure
 
 ```
-src/audio/hal_driver/     the Audio Server Plug-in sources -> the bundle
+src/audio/shared_ring.{hpp,cpp}   the shared-memory contract (#36) — built
+src/audio/hal_driver/             the Audio Server Plug-in sources -> the bundle
 src/audio/hal_backend.{hpp,cpp}   the application-side shared-memory AudioBackend
 src/mac/                  the app: endpoint main, menu bar, app bundle resources
 scripts/install-hal.sh    install the driver and restart coreaudiod
 scripts/uninstall-hal.sh  remove it and restart coreaudiod
 scripts/build-pkg.sh      the signed installer
-tests/test_hal_*.cpp      shared-memory layout, ring discipline, bridge contract
+tests/test_shared_ring.cpp        the ring contract (order, wrap, edge, two processes) — built
+tests/test_hal_*.cpp      the plug-in's realtime path and the bridge contract
 ```
 
 The plug-in is the only code in this repository that runs in another process and in a realtime
