@@ -349,15 +349,17 @@ bool Config::validate(std::string* reason) const {
   }
 
   // --- audio ---------------------------------------------------------------
-  // "coreaudio" is the macOS endpoint's device (ADR 0005): the same engine, a
-  // different seam. It is accepted here on every platform -- the build that lacks
-  // it refuses at open() with a reason, which is the pattern the other backends
-  // already follow -- so one configuration document works on both products.
+  // "coreaudio" is the macOS endpoint's device via an AudioUnit (ADR 0005) and
+  // "hal" is the endpoint's own CoreAudio device via shared memory (ADR 0007): the
+  // same engine, a different seam. Both are accepted here on every platform -- the
+  // build that lacks one refuses at open() with a reason, which is the pattern the
+  // other backends already follow -- so one configuration document works on both
+  // products.
   if (audio.backend != "ravenna" && audio.backend != "null" &&
-      audio.backend != "coreaudio") {
+      audio.backend != "coreaudio" && audio.backend != "hal") {
     return fail(reason,
-                "audio.backend: expected \"ravenna\", \"coreaudio\" or \"null\", "
-                "got \"" +
+                "audio.backend: expected \"ravenna\", \"coreaudio\", \"hal\" or "
+                "\"null\", got \"" +
                     audio.backend + "\"");
   }
   if (audio.device.empty()) {

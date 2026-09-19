@@ -14,6 +14,14 @@
 
 namespace aes67_srt::audio {
 
+/**
+ * The longest name POSIX shared memory accepts here. macOS caps it at 31
+ * characters (`PSHMNAMLEN`) where Linux allows far more, so the product honours the
+ * shorter limit and refuses a longer name by name rather than failing at
+ * `shm_open` with a bare `ENAMETOOLONG`. The product's own name is well inside it.
+ */
+inline constexpr size_t kMaxSharedRegionName = 31;
+
 class SharedRegion {
  public:
   SharedRegion() = default;

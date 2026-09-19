@@ -1,5 +1,6 @@
 #include "audio/backend.hpp"
 
+#include "audio/hal_backend.hpp"
 #include "audio/null_backend.hpp"
 
 #if AES67_SRT_WITH_ALSA
@@ -111,6 +112,12 @@ std::unique_ptr<AudioBackend> create_audio_backend(const AudioConfig& config) {
         "audio.backend: this build has no ALSA support; configure with ALSA "
         "present, or use \"null\""));
 #endif
+  }
+  if (config.backend == "hal") {
+    // The endpoint's own device (ADR 0007). The shared-memory block is
+    // platform-independent code, so the backend exists wherever POSIX shared memory
+    // does; a region the plug-in never maps degrades to silence, not a failure.
+    return std::unique_ptr<AudioBackend>(new HalBackend(config));
   }
   if (config.backend == "coreaudio") {
 #if AES67_SRT_WITH_COREAUDIO

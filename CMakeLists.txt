@@ -215,6 +215,7 @@ set(AES67_SRT_SOURCES
   src/app.cpp
   src/audio/backend.cpp
   src/audio/float_ring.cpp
+  src/audio/hal_backend.cpp
   src/audio/levels.cpp
   src/audio/null_backend.cpp
   src/audio/pcm.cpp

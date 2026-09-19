@@ -25,9 +25,9 @@ using aes67_srt::audio::SharedRegion;
 
 std::string unique_region_name(const char* tag) {
 #if defined(__unix__) || defined(__APPLE__)
-  return std::string("/aes67-srt-test-") + std::to_string(getpid()) + "-" + tag;
+  return std::string("/a67r-") + std::to_string(getpid()) + "-" + tag;
 #else
-  return std::string("/aes67-srt-test-") + tag;
+  return std::string("/a67r-") + tag;
 #endif
 }
 
@@ -60,6 +60,18 @@ TEST_CASE(shared_region_refuses_a_name_without_a_slash) {
   std::string error;
   CHECK(!region.open("no-leading-slash", 4096, &created, &error));
   CHECK(error.find("begin with") != std::string::npos);
+  CHECK(!region.is_open());
+}
+
+TEST_CASE(shared_region_refuses_a_name_longer_than_posix_allows) {
+  // macOS caps a POSIX shm name at 31 characters; a longer one fails at shm_open
+  // with ENAMETOOLONG, so the refusal must name the limit instead.
+  SharedRegion region;
+  bool created = false;
+  std::string error;
+  const std::string name = "/aes67-srt-test-name-that-is-far-too-long";
+  CHECK(!region.open(name, 4096, &created, &error));
+  CHECK(error.find("limit") != std::string::npos);
   CHECK(!region.is_open());
 }
 

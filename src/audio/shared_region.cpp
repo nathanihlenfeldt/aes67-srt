@@ -42,6 +42,14 @@ bool SharedRegion::open(const std::string& name, size_t bytes, bool* created,
     return fail(error,
                 "shared region name: must begin with '/' (got \"" + name + "\")");
   }
+  if (name.size() > kMaxSharedRegionName) {
+    // macOS's PSHMNAMLEN is 31; a longer name fails there with ENAMETOOLONG, and a
+    // bare errno is not a reason an operator can act on.
+    return fail(error, "shared region name: \"" + name + "\" is " +
+                           std::to_string(name.size()) +
+                           " characters, the limit is " +
+                           std::to_string(kMaxSharedRegionName));
+  }
   if (bytes == 0) {
     return fail(error, "shared region bytes: must be positive");
   }

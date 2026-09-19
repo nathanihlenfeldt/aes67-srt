@@ -16,6 +16,7 @@ add_executable(aes67-srt-tests
   test_delay_line.cpp
   test_device_bridge.cpp
   test_engine.cpp
+  test_hal_backend.cpp
   test_float_ring.cpp
   test_http.cpp
   test_main.cpp
