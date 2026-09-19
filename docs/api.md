@@ -127,6 +127,42 @@ channel is selected (`-1`).
 { "ok": true }
 ```
 
+## Lifecycle — the engine, the process, the daemon
+
+The three levels at which the program can be started and stopped, from the page's **Service** card.
+There is no body; each returns the state it moved to.
+
+```
+POST /api/engine/start    -> { "ok": true, "state": "running" }
+POST /api/engine/stop     -> { "ok": true, "state": "stopped" }
+POST /api/engine/restart  -> { "ok": true, "state": "running" }
+```
+
+`engine/*` operates the **audio engine** — the part that moves audio — while the process (and this
+page) stay up. `state` is one of `stopped`, `starting`, `running`, `failed`: a listener that has opened
+its socket but has no caller yet reports **`starting`**, which is honest rather than a fault. A start
+that fails returns `400` with the reason. `503` if the build has no engine service.
+
+```
+POST /api/process/restart -> { "ok": true, "detail": "stopping; the supervisor will restart it" }
+```
+
+`process/restart` restarts the **whole program**, which is what picks up a **new binary**. It cannot
+restart itself and keep serving, so it asks to stop; `launchd` (`KeepAlive`) or `systemd`
+(`Restart=always`) relaunches it, and the page reconnects a few seconds later.
+
+```
+POST /api/daemon/start    -> { "ok": true, "action": "start", "output": "" }
+POST /api/daemon/stop     -> { "ok": true, "action": "stop",  "output": "" }
+POST /api/daemon/restart  -> { "ok": true, "action": "restart", "output": "" }
+```
+
+`daemon/*` drives the separate `aes67-daemon` systemd service (appliance only; `404` on a build with no
+daemon). The appliance user cannot normally do this, so `install-daemon.sh` installs a **polkit rule**
+scoped to `aes67-daemon.service`; without it `systemctl` refuses and the route returns **`403`** with
+systemctl's own output rather than pretending. The command is fixed — one of three verbs, our unit — so
+nothing here reaches a shell from the request.
+
 ## `GET /api/aes67/status`
 
 The daemon window: PTP, what we publish, what we subscribed, and what was discovered.

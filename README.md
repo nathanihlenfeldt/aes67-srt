@@ -6,37 +6,41 @@ internet: **64 channels — eight 8-channel blocks — of uncompressed L24 PCM a
 same binary acting as transmitter, receiver or both. Configured from a web UI,
 because it ships to other people's sites.
 
-**Status: the wire format, the SRT transport, the audio device, the daemon client, the engine, the
-clock and the A/V delay line are built and tested.** The appliance moves audio between an AES67
-device and a single SRT stream in each direction, reconciles the two ends' clock domains by
-continuous resampling (ADR 0003), and can delay its egress audio to match vision with an impulse test
-signal to align against (ticket 12). **The control surface — the REST API and the web UI — is still
-to come**, and so is a two-appliance WAN figure. The plan, the decisions and the open questions are
-in the specification, and the measured facts are in `docs/research/`.
+**Status: v1 is built, tested and running in the field.** The appliance moves audio between an AES67
+device and a single SRT stream in each direction, reconciles the two ends' clock domains by continuous
+resampling (ADR 0003), carries up to 64 channels losslessly or with Opus, and can delay its egress
+audio to match vision with an impulse test signal to align against. It is controlled from a web page
+whose REST API and controls — including start/stop/restart of the engine, the process and the daemon —
+are in service. The macOS endpoint presents the stream to CoreAudio through BlackHole, with a menu-bar
+app. **What remains is human and hardware acceptance, not build:** the real-device clock session
+(issue #18), an hours-long internet soak (#29), a signed Mac build (#30), and the studio return path
+(#31). The plan is in the specification, the decisions in `docs/adr/`, and the measured facts in
+`docs/research/`.
 
-**The link it expects:** wired Ethernet at both ends and a low-jitter internet connection — 64
-channels is ~74 Mbit/s per direction, and the round trip plus its jitter has to fit inside the
-transport delay. Wi-Fi, 5G/LTE and consumer satellite (Starlink) are out of scope for v1; that is
-what phase-2 Opus is for. See `docs/spec/0001-aes67-srt.md` → *The link it expects*.
+**The link it expects:** wired Ethernet at both ends and a low-jitter internet connection. The default
+is **Opus**, at roughly **1–8 Mbit/s for all 64 channels**; lossless PCM is ~74 Mbit/s per direction.
+Either way, the round trip plus its jitter has to fit inside the transport delay. Wi-Fi, 5G/LTE and
+consumer satellite (Starlink) remain out of scope: their jitter exceeds what the delay window absorbs.
+See `docs/spec/0001-aes67-srt.md` → *The link it expects*.
 
 ## Where things are
 
-- **`docs/spec/0001-aes67-srt.md`** — the specification. Start here. The frozen
-  decisions, the capability map, the wire format, the clock problem and the
-  boundaries are all in it.
-- **`docs/ROADMAP.md`** — what comes after v1: Opus and AAC-LC encoding for links
-  that cannot carry 74 Mbit/s of PCM.
+- **`docs/README.md`** — the map of all documentation, by who it is for.
+- **`docs/manual/`** — **the user manual**, for installing and operating it: getting started,
+  configuring, operating, use cases and troubleshooting.
+- **`docs/spec/0001-aes67-srt.md`** — the specification. Start here to work on the code. The frozen
+  decisions, the capability map, the wire format, the clock problem and the boundaries are all in it.
+- **`docs/ROADMAP.md`** — what comes after v1, and what is deliberately not in it.
 - **`docs/research/`** — what was verified against primary sources, with citations. Start with
   `libsrt.md`: it corrects an assumption the wire format's ADR was built on.
-- **`docs/runbooks/hardware-session.md`** — **where the project is blocked**: one session at the
-  hardware closes the measurements three tickets are waiting on. Run
-  `scripts/measure-hardware.sh` on the appliance and send the report back.
+- **`docs/runbooks/hardware-session.md`** — the one session at the hardware the remaining measurements
+  wait on. Run `scripts/measure-hardware.sh` on the appliance and send the report back.
 - **`docs/agents/`** — how the engineering skills read this repository.
 - **`docs/adr/`** — decisions of record. `0001` is the wire format: our own frame in the SRT
   stream rather than RTP-over-SRT. `0002` is the licence. The rest arrive as decisions land.
 - **`CHANGELOG.md`** — what each version changed. **`docs/releasing.md`** — the version scheme and the
   release checklist. **`docs/third-party-licences.md`** — the dependency licence audit.
-- **`docs/runbooks/`** — the field procedures: `operating.md` for starting, stopping and updating it, `commissioning.md` for a site and a studio,
+- **`docs/runbooks/`** — the field procedures: `commissioning.md` for a site and a studio,
   `macos-endpoint.md` for the studio endpoint, `hardware-session.md` for the measurements.
 - **`CONTEXT.md`** — the glossary, created lazily when terms actually land. Not written
   speculatively.
@@ -45,9 +49,10 @@ The work is tracked as issues on
 [`nathanihlenfeldt/aes67-srt`](https://github.com/nathanihlenfeldt/aes67-srt/issues):
 the numbered chain is the build order, issues #2–#5 are the research, and #1 is the specification.
 
-**Next, in one line:** run `scripts/measure-hardware.sh` on the Pi (issue #18). The clock module's
-approach, phase 2's shape and whether 64 channels of audio fit at all all wait on numbers that only
-the appliance can produce — see the runbook for what each figure decides.
+**Next, in one line:** the build is done, so the next work is acceptance — run
+`scripts/measure-hardware.sh` on the Pi for the real-device clock figures (issue #18), then the
+hours-long internet soak (#29); the signed Mac build (#30) and the studio return path (#31) follow.
+See [`docs/README.md`](docs/README.md) for where everything lives.
 
 ## Building
 

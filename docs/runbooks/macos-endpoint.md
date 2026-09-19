@@ -1,10 +1,13 @@
-# Runbook: the macOS endpoint, an MVP to test by hand
+# Runbook: the macOS endpoint
 
-This is the second product (issue #19): SRT to CoreAudio, so a DAW can record or play the audio this
-project's appliance carries. It only ever talks to this project's own appliance — one wire format, no
-interop matrix — and it has no AES67, no PTP and no daemon (ADR 0004).
+The second product: SRT to CoreAudio, so a DAW can record or play the audio this project's appliance
+carries. It only ever talks to this project's own appliance — one wire format, no interop matrix — and
+it has no AES67, no PTP and no daemon (ADR 0004).
 
-What has been proved, and what has not, is in `docs/research/macos-endpoint.md` and on issue #19.
+**For installing and running it, the [user manual](../manual/index.md) is the front door** — especially
+[Getting started](../manual/getting-started.md) and [Operating it](../manual/operating.md). This
+runbook is the field procedure: the manual `install-mac.sh` steps, the two directions, and the
+behaviour to expect. What has been proved is in `docs/research/macos-endpoint.md` and on issue #19.
 
 ## Installing it on a studio Mac
 
@@ -48,9 +51,10 @@ assumes*.
 
 ## What you need
 
-- **Wired Ethernet on the Mac.** Not Wi-Fi: 64 channels is ~74 Mbit/s per direction and Wi-Fi drops
-  the bursts SRT then has to recover, which the operator hears as loss. The same goes for the site
-  end — this is a level of the stack the appliance cannot fix for you.
+- **Wired Ethernet on the Mac.** Not Wi-Fi: even at the default Opus (~1–8 Mbit/s for 64 channels)
+  Wi-Fi drops the bursts SRT then has to recover, which the operator hears as loss; at lossless PCM
+  (~74 Mbit/s per direction) it is worse. The same goes for the site end — this is a level of the
+  stack the appliance cannot fix for you.
 - **The Mac**: the endpoint built (`build/aes67-srt-mac`), and **BlackHole 64ch** installed. After
   installing BlackHole, `coreaudiod` must be restarted or the device is invisible:
   ```

@@ -13,12 +13,21 @@ Two different kinds of thing live here, and the difference matters:
   around it, which is what ADR 0004 is about. **It does not start until the appliance is complete** —
   see the sequencing note under it.
 
-## Phase 1 — PCM transport (current)
+## Phase 1 — PCM transport (shipped)
 
 64 channels (eight 8-channel blocks) of uncompressed L24 PCM at 48 kHz in each direction, in one
 SRT stream per link, bidirectional, with a web UI. Spec: `docs/spec/0001-aes67-srt.md`.
 
-## Phase 2 — bandwidth-constrained operation (lossy encoding)
+## Phase 2 — bandwidth-constrained operation (lossy encoding) — **shipped**
+
+> **Landed.** Opus is built and is the **shipped default** (`src/codec/opus.{hpp,cpp}`, per-block
+> codec and bitrate, eight independent mono streams per block, threaded with `ParallelFor`). The
+> open questions below are **answered in the implementation**: Opus is the default (not an explicit
+> choice); bitrate is per block; the impulse test signal works in codec mode, with the codec's delay
+> shown in the A/V total; ingest stays PCM (AES67 is PCM); and the delay-grows policy is unchanged —
+> no harder ceiling, because the page's alarm is the answer. The section below is kept as the
+> reasoning that produced it, not as pending work. **AAC-LC was never built** and remains a licensing
+> question for a future input, not a v1 obligation.
 
 **Why.** PCM has no compression lever at all, so 64 channels cost ~74 Mbit/s per direction and a
 link that cannot carry that simply cannot use the tool. Encoding to Opus or AAC turns "does not
