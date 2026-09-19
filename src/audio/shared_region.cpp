@@ -57,12 +57,20 @@ bool SharedRegion::open(const std::string& name, size_t bytes, bool* created,
   // Try to create it exclusively first; if it already exists, open the existing
   // one. This is the only reliable way to know whether *this* process is the
   // creator.
+  // 0666, not 0600, and it matters: the two halves run as **different users**. The
+  // plug-in is hosted by coreaudiod (root), the application runs as the person at
+  // the Mac, and either may start first -- coreaudiod can open a device at boot,
+  // before anyone logs in. With 0600 the side that did not create the region is
+  // refused with EACCES, which is exactly what happened the first time this was
+  // tried. The region carries live audio, so a shared group would be tighter; the
+  // name is local-only and the Mac is a workstation, so world read/write is the
+  // pragmatic choice.
   bool made_it = false;
-  int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+  int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0666);
   if (fd >= 0) {
     made_it = true;
   } else if (errno == EEXIST) {
-    fd = shm_open(name.c_str(), O_RDWR, 0600);
+    fd = shm_open(name.c_str(), O_RDWR, 0666);
   }
   if (fd < 0) {
     return fail(error, "shared region open: " + std::string(std::strerror(errno)));

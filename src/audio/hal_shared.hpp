@@ -19,4 +19,22 @@ inline constexpr unsigned kHalChannels = 64;
  *  engine's period, and is not the jitter buffer (the playout buffer is). */
 inline constexpr size_t kHalCapacityFrames = 4096;
 
+/**
+ * **Do not set the device's `ZeroTimeStampPeriod` to this.** It is left here as a
+ * warning, not a knob.
+ *
+ * An earlier cut set the zero-timestamp period to a small, I/O-sized value (512) in
+ * the belief that it was the HAL's I/O buffer size and that the device was running
+ * I/O only once a second. It is not, and it does not: libASPL's `GetZeroTimeStamp`
+ * uses the period as the timestamp ring's wrap length, and handing the HAL 512
+ * while it expected the sample rate made coreaudiod spin at ~100% CPU and every
+ * `system_profiler` hang. libASPL's own example devices leave it at the default
+ * (the sample rate), and so do we.
+ *
+ * The original symptom -- a receive path that stalls with `delay 1000 ms` when
+ * nothing is draining the ring -- is real and is addressed on the application side,
+ * not by lying to the HAL about time.
+ */
+inline constexpr unsigned kHalIOPeriodFramesDoNotUse = 512;
+
 }  // namespace aes67_srt::audio

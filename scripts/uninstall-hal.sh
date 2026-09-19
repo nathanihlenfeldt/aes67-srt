@@ -40,7 +40,9 @@ fi
 
 if [ "${RESTART}" -eq 1 ]; then
   echo "-- restarting the audio server"
-  launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null || killall -9 coreaudiod
+  if ! launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null; then
+    killall -9 coreaudiod
+  fi
   for _ in $(seq 1 20); do
     pgrep -x coreaudiod >/dev/null && break
     sleep 0.5
@@ -48,7 +50,11 @@ if [ "${RESTART}" -eq 1 ]; then
   sleep 2
 fi
 
-if system_profiler SPAudioDataType 2>/dev/null | grep -q "${DEVICE_NAME}"; then
+# Bounded, so a wedged coreaudiod cannot hang the uninstall (macOS has no timeout).
+report="$(perl -e 'alarm 20; exec @ARGV' system_profiler SPAudioDataType 2>/dev/null || true)"
+if [ -z "${report}" ]; then
+  echo "-- CoreAudio did not respond to enumeration; try: sudo killall -9 coreaudiod"
+elif printf '%s' "${report}" | grep -q "${DEVICE_NAME}"; then
   echo "-- WARNING: ${DEVICE_NAME} is still present; a reboot clears it"
 else
   echo "-- ${DEVICE_NAME} removed"

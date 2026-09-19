@@ -17,6 +17,27 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 INSTALL_DIR="/Library/Audio/Plug-Ins/HAL"
 DEVICE_NAME="AES67-SRT"
 
+# system_profiler hangs indefinitely when coreaudiod is wedged, which turns a
+# preflight into an install that never returns. macOS has no `timeout`, so bound it
+# with perl's alarm; an empty result is reported as "did not respond", not a hang.
+sp_audio() {
+  perl -e 'alarm 20; exec @ARGV' system_profiler SPAudioDataType 2>/dev/null || true
+}
+
+restart_audio() {
+  echo "-- restarting the audio server (system audio will briefly interrupt)"
+  # `launchctl kickstart` is refused under SIP on this macOS ("Operation not
+  # permitted"); `killall` is the fallback that works, so it is not an error path.
+  if ! launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null; then
+    killall -9 coreaudiod
+  fi
+  for _ in $(seq 1 20); do
+    pgrep -x coreaudiod >/dev/null && break
+    sleep 0.5
+  done
+  sleep 2
+}
+
 BUNDLE="${REPO_ROOT}/build/AES67SRT.driver"
 RESTART=1
 
@@ -46,21 +67,19 @@ rm -rf "${DEST}"
 cp -R "${BUNDLE}" "${DEST}"
 
 if [ "${RESTART}" -eq 1 ]; then
-  echo "-- restarting the audio server (system audio will briefly interrupt)"
-  launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null || killall -9 coreaudiod
-  for _ in $(seq 1 20); do
-    pgrep -x coreaudiod >/dev/null && break
-    sleep 0.5
-  done
-  sleep 2
+  restart_audio
 fi
 
 echo
 echo "-- preflight report"
 echo "   bundle            $(basename "${DEST}")  ($(du -sh "${DEST}" 2>/dev/null | cut -f1))"
-if system_profiler SPAudioDataType 2>/dev/null | grep -q "${DEVICE_NAME}"; then
+report="$(sp_audio)"
+if [ -z "${report}" ]; then
+  echo "   device            CoreAudio did not respond to enumeration (coreaudiod may be wedged)"
+  echo "                     try: sudo killall -9 coreaudiod"
+elif printf '%s' "${report}" | grep -q "${DEVICE_NAME}"; then
   echo "   device            ${DEVICE_NAME} present"
-  system_profiler SPAudioDataType 2>/dev/null | grep -A9 -F "${DEVICE_NAME}" | sed 's/^/   /'
+  printf '%s\n' "${report}" | grep -A9 -F "${DEVICE_NAME}" | sed 's/^/   /'
 else
   echo "   device            ${DEVICE_NAME} NOT present"
   echo "                     (a restart of coreaudiod may be needed, or the plug-in failed to load)"

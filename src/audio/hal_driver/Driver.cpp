@@ -140,6 +140,11 @@ std::shared_ptr<aspl::Driver> CreateDriver() {
   device_params.SampleRate = kSampleRate;
   device_params.ChannelCount = kHalChannels;
   device_params.DeviceUID = "aes67-srt-device";
+  // Leave ZeroTimeStampPeriod at its default (the sample rate). An earlier cut set
+  // it to a small I/O-sized value to make the ring turn over faster, and it wedged
+  // coreaudiod -- the HAL spins when the zero-timestamp period and its own I/O
+  // buffer size disagree. libASPL's own example devices use the default for the
+  // same reason. The drain problem it was meant to fix is solved elsewhere.
   // A bridge a DAW selects, not a sound device: it must not become the system's
   // default and route alerts into a silent link (spec 0002, decided 2026-09-19).
   device_params.CanBeDefault = false;
