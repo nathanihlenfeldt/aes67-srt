@@ -70,10 +70,18 @@ sudo systemctl status aes67-daemon   # the AES67 daemon, separate
 
 ## Why it looks like nothing is there
 
-Both are **background services**: no Dock icon, no window, no menu-bar item. That is normal for a
-service, and it is also the thing people find disconcerting — the software is running and invisible,
-and the only way to see it is the web page. A menu-bar app that shows the state and offers
-start/stop/restart is the obvious answer for the studio Mac, and is not built yet.
+Both are **background services**: no Dock icon, no window. That is normal for a service, and it is
+also the thing people find disconcerting — the software is running and invisible.
+
+**On the Mac there is now a menu bar app**, installed by `install-mac.sh` (skip it with
+`--no-menubar`). It shows the state — **● aes67** running,  starting/stopped, ○ offline — with the
+rate and delay in the tooltip, and its menu has **Open control page**, **Start / Stop / Restart
+audio**, **Restart process** and **Quit the menu bar**. It is a separate LaunchAgent
+(`com.aes67-srt.menubar`) that starts at login and polls the endpoint's own `/api/status`; it owns
+nothing, so quitting it does not stop the audio.
+
+On the appliance there is no icon — it is a headless box, reached by its web page — so the page is the
+only face it has.
 
 ## What to expect
 

@@ -27,6 +27,7 @@ PEER=""
 PASSPHRASE=""
 LOCAL_PORT=""
 HTTP_PORT=""
+WITH_MENUBAR=1
 
 usage() {
   cat <<'USAGE'
@@ -39,6 +40,7 @@ usage: install-mac.sh [options]
   --passphrase <text>   the shared SRT passphrase (default: set it in the config)
   --local-port <port>   this end's SRT port (default 9100)
   --http-port <port>    the control surface's port (default 8082)
+  --no-menubar          do not build or start the menu-bar app
   -h, --help            this message
 
 Installs to ~/Library/Application Support/aes67-srt and loads a LaunchAgent.
@@ -55,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --passphrase) PASSPHRASE="$2"; shift 2 ;;
     --local-port) LOCAL_PORT="$2"; shift 2 ;;
     --http-port) HTTP_PORT="$2"; shift 2 ;;
+    --no-menubar) WITH_MENUBAR=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "install-mac: unknown option: $1" >&2; exit 2 ;;
   esac
@@ -155,11 +158,60 @@ else
   loaded="load"
 fi
 
+# ---------------------------------------------------------------------------
+# The menu bar: a visible face for a background service
+# ---------------------------------------------------------------------------
+# The endpoint is a LaunchAgent with no icon, so "is it running?" is otherwise
+# only answerable from the web page. If a Swift compiler is present, build the
+# menu-bar app and start it at login too. Optional: a Mac without the toolchain
+# still gets the endpoint, just without the icon.
+MENUBAR_LABEL="com.aes67-srt.menubar"
+MENUBAR_PLIST="${AGENT_DIR}/${MENUBAR_LABEL}.plist"
+MENUBAR_BIN="${APP_DIR}/aes67-srt-menubar"
+menubar="skipped (no Swift compiler)"
+if [[ "${WITH_MENUBAR}" -eq 1 ]] && command -v swiftc >/dev/null 2>&1; then
+  if swiftc -O -o "${MENUBAR_BIN}.tmp" "${REPO_ROOT}/src/mac/menubar.swift" 2>"${APP_DIR}/menubar-build.log"; then
+    install -m 0755 "${MENUBAR_BIN}.tmp" "${MENUBAR_BIN}"
+    rm -f "${MENUBAR_BIN}.tmp"
+    cat > "${MENUBAR_PLIST}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${MENUBAR_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${MENUBAR_BIN}</string>
+    <string>--port</string>
+    <string>$(python3 -c "import json;print(json.load(open('${CONFIG}'))['http_port'])" 2>/dev/null || echo 8082)</string>
+    <string>--title</string>
+    <string>aes67</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+    launchctl bootout "gui/$(id -u)/${MENUBAR_LABEL}" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "${MENUBAR_PLIST}" 2>/dev/null ||
+      launchctl load "${MENUBAR_PLIST}" 2>/dev/null || true
+    menubar="installed"
+  else
+    menubar="build failed; see ${APP_DIR}/menubar-build.log"
+  fi
+elif [[ "${WITH_MENUBAR}" -eq 0 ]]; then
+  menubar="skipped (--no-menubar)"
+fi
+
 echo
 echo "installed:"
 echo "  binary  ${BINARY}"
 echo "  config  ${CONFIG}"
 echo "  agent   ${AGENT_PLIST}  (${loaded})"
+echo "  menubar ${menubar}"
 echo "  log     ${LOG_DIR}/endpoint.log"
 echo
 echo "next:"
