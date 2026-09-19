@@ -57,6 +57,15 @@ loopback: the input and output streams are independent, which is what makes dupl
 | Device name | **`AES67-SRT`** | It is what an operator selects in a DAW and what Audio MIDI Setup shows; decided by the owner 2026-09-19 |
 | Ring depth | at least four engine periods, rounded up to a power of two | It absorbs cadence, not drift — the playout buffer is still the jitter buffer |
 
+**Built and confirmed by the spike (#35, 2026-09-19).** A libASPL v3.1.2 plug-in presenting this exact
+shape installs in **2.6 s** including the `coreaudiod` restart, and appears in `system_profiler` as
+**64 in, 64 out, 48 kHz, Virtual**; it uninstalls to a byte-identical device list. libASPL supplied
+every piece of HAL dispatch — device, streams, formats, callbacks — and nothing was hand-written, so
+the unknown this ticket carried is retired. Two libASPL defaults were the product's to decide, and both
+are now decided: **`CanBeDefault` is set false** — this is a bridge a DAW selects, not a sound device,
+and letting macOS route system alerts into it would be silently confusing — and **`EnableMixing` stays
+true**, because the send path wants the mix of every client.
+
 The plug-in does exactly three things: report the device's properties to the HAL (from libASPL's
 defaults plus our stream layout), and in the two I/O callbacks copy to or from a shared-memory ring.
 **No allocation, no locks that can block, no logging, no syscalls, no logic.** Format conversion,
@@ -119,6 +128,10 @@ Gate      : scripts/check.sh                            # unchanged; the HAL tar
 
 The HAL target is `AUTO` like the other platform pieces: on Linux the bundle is not built and the
 bridge's tests skip, exactly as the transport tests skip without libsrt.
+
+**libASPL must be a full clone, not `--depth 1`.** Its CMake derives its version from `git describe`
+and fails on a shallow clone with no reachable tag (the spike hit exactly this). A full clone, or
+`git fetch --unshallow`, is required — worth encoding in whatever fetches it.
 
 ## Project structure
 
