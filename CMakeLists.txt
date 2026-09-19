@@ -212,10 +212,12 @@ set(AES67_SRT_SOURCES
   src/aes67/fake_daemon_client.cpp
   src/app.cpp
   src/audio/backend.cpp
+  src/audio/device_bridge.cpp
   src/audio/float_ring.cpp
   src/audio/levels.cpp
   src/audio/null_backend.cpp
   src/audio/pcm.cpp
+  src/audio/shared_region.cpp
   src/audio/shared_ring.cpp
   src/clock/playout_buffer.cpp
   src/clock/ratio_control.cpp

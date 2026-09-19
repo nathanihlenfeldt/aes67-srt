@@ -14,11 +14,13 @@ add_executable(aes67-srt-tests
   test_config.cpp
   test_daemon.cpp
   test_delay_line.cpp
+  test_device_bridge.cpp
   test_engine.cpp
   test_float_ring.cpp
   test_http.cpp
   test_main.cpp
   test_parallel_for.cpp
+  test_shared_region.cpp
   test_shared_ring.cpp
   test_test_signal.cpp
   test_transport.cpp
